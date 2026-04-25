@@ -1,0 +1,149 @@
+import click
+from rich.console import Console
+from stitch_cli.scanner import scan_project
+from stitch_cli.executor import execute_command
+from stitch_cli.reporter import generate_report
+from stitch_cli.agent_client import analyze_logs_with_agent, suggest_repair_with_agent
+
+console = Console()
+
+
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
+@click.argument("path", required=False, default=".")
+@click.option("--run", is_flag=True, help="Run the suggested project command.")
+@click.option("--analyze", is_flag=True, help="Send execution logs to the log agent.")
+@click.option("--repair", is_flag=True, help="Send execution logs to the repair agent.")
+@click.option(
+    "--agent-url",
+    default="http://127.0.0.1:7860",
+    help="Log agent API base URL.",
+)
+@click.option(
+    "--repair-agent-url",
+    default="http://127.0.0.1:7861",
+    help="Repair agent API base URL.",
+)
+def scan(path, run, analyze, repair, agent_url, repair_agent_url):
+    try:
+        result = scan_project(path)
+    except Exception as error:
+        console.print(f"[bold red]Scan failed:[/bold red] {error}")
+        return
+
+    console.print("\n[bold green]Stitch QA Scan Started[/bold green]")
+    console.print(f"[bold]Project Path:[/bold] {result['project_path']}")
+    console.print(f"[bold]Detected Type:[/bold] {result['project_type']}")
+    console.print(f"[bold]Total Files:[/bold] {result['total_files']}")
+    console.print(f"[bold]Total Folders:[/bold] {result['total_folders']}")
+    console.print(f"[bold]Ignored Items:[/bold] {result['ignored_items']}")
+
+    console.print("\n[bold cyan]File Extension Summary[/bold cyan]")
+    for extension, count in result["extension_counts"].items():
+        console.print(f"- {extension}: {count}")
+
+    static_map = result["static_map"]
+
+    console.print("\n[bold cyan]Static Mapping[/bold cyan]")
+    console.print(f"[bold]Build File:[/bold] {static_map['build_file']}")
+    console.print(f"[bold]Main Source Dir:[/bold] {static_map['main_source_dir']}")
+    console.print(f"[bold]Test Source Dir:[/bold] {static_map['test_source_dir']}")
+    console.print(f"[bold]Main File:[/bold] {static_map['main_file']}")
+    console.print(f"[bold]Suggested Command:[/bold] {static_map['suggested_command']}")
+
+    console.print("\n[bold cyan]Detected Files[/bold cyan]")
+    for file in result["files"][:20]:
+        console.print(f"- {file}")
+
+    if result["total_files"] > 20:
+        console.print(f"... and {result['total_files'] - 20} more files")
+
+    if (analyze or repair) and not run:
+        console.print("\n[bold red]Analyze/repair requires --run.[/bold red]")
+        console.print("Use: stitch scan demo --run --analyze --repair")
+        return
+
+    if run:
+        agent_data = None
+        repair_data = None
+
+        console.print("\n[bold magenta]Execution Started[/bold magenta]")
+
+        execution_result = execute_command(
+            result["project_path"],
+            static_map["suggested_command"],
+        )
+
+        console.print(f"[bold]Command:[/bold] {execution_result['command']}")
+        console.print(f"[bold]Success:[/bold] {execution_result['success']}")
+        console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
+
+        console.print("\n[bold cyan]STDOUT[/bold cyan]")
+        console.print(execution_result["stdout"][-3000:] or "No stdout output.")
+
+        console.print("\n[bold red]STDERR[/bold red]")
+        console.print(execution_result["stderr"][-3000:] or "No stderr output.")
+
+        if analyze:
+            console.print("\n[bold magenta]Log Agent Analysis Started[/bold magenta]")
+
+            analysis_result = analyze_logs_with_agent(
+                agent_url,
+                result,
+                execution_result,
+            )
+
+            if analysis_result["success"]:
+                agent_data = analysis_result["data"]
+
+                console.print(f"[bold]Agent:[/bold] {agent_data.get('agent')}")
+                console.print(f"[bold]Final Status:[/bold] {agent_data.get('final_status')}")
+                console.print(f"[bold]Summary:[/bold] {agent_data.get('summary')}")
+                console.print(f"[bold]Root Cause:[/bold] {agent_data.get('root_cause')}")
+                console.print(f"[bold]Recommendation:[/bold] {agent_data.get('recommendation')}")
+
+                console.print("\n[bold cyan]Issues[/bold cyan]")
+                for issue in agent_data.get("issues", []):
+                    console.print(f"- {issue}")
+
+                console.print("\n[bold yellow]Warnings[/bold yellow]")
+                for warning in agent_data.get("warnings", []):
+                    console.print(f"- {warning}")
+            else:
+                console.print("[bold red]Log agent request failed.[/bold red]")
+                console.print(analysis_result["error"])
+
+        if repair:
+            console.print("\n[bold magenta]Repair Agent Started[/bold magenta]")
+
+            repair_result = suggest_repair_with_agent(
+                repair_agent_url,
+                result,
+                execution_result,
+                agent_data,
+            )
+
+            if repair_result["success"]:
+                repair_data = repair_result["data"]
+
+                console.print(f"[bold]Agent:[/bold] {repair_data.get('agent')}")
+                console.print(f"[bold]Risk Level:[/bold] {repair_data.get('risk_level')}")
+                console.print(f"[bold]Auto Apply:[/bold] {repair_data.get('auto_apply')}")
+                console.print(f"[bold]Summary:[/bold] {repair_data.get('summary')}")
+                console.print(f"[bold]Next Action:[/bold] {repair_data.get('next_action')}")
+
+                console.print("\n[bold cyan]Repair Suggestions[/bold cyan]")
+                for suggestion in repair_data.get("suggestions", []):
+                    console.print(f"- {suggestion}")
+            else:
+                console.print("[bold red]Repair agent request failed.[/bold red]")
+                console.print(repair_result["error"])
+
+        report_path = generate_report(result, execution_result, agent_data, repair_data)
+        console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
+
+    console.print("\n[bold yellow]Next:[/bold yellow] HF model integration will be added next.")
