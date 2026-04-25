@@ -1,0 +1,40 @@
+name: Deploy HF Agents
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - "agents/log-agent/**"
+      - "agents/repair-agent/**"
+      - ".github/workflows/deploy-hf-agents.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy-log-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Deploy log agent to Hugging Face Space
+        uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: hashan-7/stitch-qa-log-agent
+          repo_type: space
+          local_dir: agents/log-agent
+          hf_token: ${{ secrets.HF_TOKEN }}
+
+  deploy-repair-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Deploy repair agent to Hugging Face Space
+        uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: hashan-7/stitch-qa-repair-agent
+          repo_type: space
+          local_dir: agents/repair-agent
+          hf_token: ${{ secrets.HF_TOKEN }}
