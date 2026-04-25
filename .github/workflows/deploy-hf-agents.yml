@@ -13,28 +13,48 @@ on:
 jobs:
   deploy-log-agent:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v6
+
+      - name: Install Hugging Face CLI
+        run: pip install -U huggingface_hub
+
+      - name: Prepare log agent files
+        run: |
+          mkdir -p hf-log-agent
+          cp agents/log-agent/app.py hf-log-agent/
+          cp agents/log-agent/requirements.txt hf-log-agent/
+          cp agents/log-agent/Dockerfile hf-log-agent/
+          cp agents/log-agent/README.md hf-log-agent/
 
       - name: Deploy log agent to Hugging Face Space
-        uses: huggingface/hub-sync@v0.1.0
-        with:
-          github_repo_id: ${{ github.repository }}
-          huggingface_repo_id: hashan-7/stitch-qa-log-agent
-          repo_type: space
-          local_dir: agents/log-agent
-          hf_token: ${{ secrets.HF_TOKEN }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          hf upload hashan-7/stitch-qa-log-agent hf-log-agent . --repo-type=space --delete="*" --commit-message="Deploy log agent from GitHub Actions"
 
   deploy-repair-agent:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v6
+
+      - name: Install Hugging Face CLI
+        run: pip install -U huggingface_hub
+
+      - name: Prepare repair agent files
+        run: |
+          mkdir -p hf-repair-agent
+          cp agents/repair-agent/app.py hf-repair-agent/
+          cp agents/repair-agent/requirements.txt hf-repair-agent/
+          cp agents/repair-agent/Dockerfile hf-repair-agent/
+          cp agents/repair-agent/README.md hf-repair-agent/
 
       - name: Deploy repair agent to Hugging Face Space
-        uses: huggingface/hub-sync@v0.1.0
-        with:
-          github_repo_id: ${{ github.repository }}
-          huggingface_repo_id: hashan-7/stitch-qa-repair-agent
-          repo_type: space
-          local_dir: agents/repair-agent
-          hf_token: ${{ secrets.HF_TOKEN }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          hf upload hashan-7/stitch-qa-repair-agent hf-repair-agent . --repo-type=space --delete="*" --commit-message="Deploy repair agent from GitHub Actions"
