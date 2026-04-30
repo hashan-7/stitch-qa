@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-import requests
+from huggingface_hub import InferenceClient
 import os
 
-HF_API_URL = "https://api-inference.huggingface.co/models/google/flan-t5-large"
 HF_TOKEN = os.getenv("HF_TOKEN")
+HF_MODEL = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
 
 app = FastAPI(title="Stitch QA Log Agent")
 
@@ -23,7 +23,8 @@ def health_check():
     return {
         "service": "stitch-qa-log-agent",
         "status": "running",
-        "llm_enabled": bool(HF_TOKEN)
+        "llm_enabled": bool(HF_TOKEN),
+        "model": HF_MODEL
     }
 
 
@@ -67,8 +68,8 @@ def rule_based_analysis(request: LogAnalysisRequest):
 
 
 def build_prompt(request: LogAnalysisRequest):
-    stdout_tail = request.stdout[-4000:] if request.stdout else "No stdout output."
-    stderr_tail = request.stderr[-4000:] if request.stderr else "No stderr output."
+    stdout_tail = request.stdout[-3500:] if request.stdout else "No stdout output."
+    stderr_tail = request.stderr[-3500:] if request.stderr else "No stderr output."
 
     return f"""
 You are an expert software QA engineer.
@@ -93,13 +94,13 @@ STDOUT:
 STDERR:
 {stderr_tail}
 
-Return a concise QA analysis with:
-1. Summary
-2. Root Cause
-3. Issues
-4. Warnings
-5. Recommendation
-6. Final Status as PASS or FAIL
+Return a concise QA analysis with these sections:
+Summary:
+Root Cause:
+Issues:
+Warnings:
+Recommendation:
+Final Status:
 """
 
 
@@ -107,41 +108,28 @@ def call_llm(prompt: str):
     if not HF_TOKEN:
         raise RuntimeError("HF_TOKEN is not configured.")
 
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 300,
-            "return_full_text": False
-        }
-    }
-
-    response = requests.post(
-        HF_API_URL,
-        headers=headers,
-        json=payload,
+    client = InferenceClient(
+        model=HF_MODEL,
+        token=HF_TOKEN,
         timeout=60
     )
 
-    response.raise_for_status()
-    return response.json()
+    response = client.chat_completion(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a senior QA engineer who explains build logs clearly and concisely."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        max_tokens=400,
+        temperature=0.2
+    )
 
-
-def extract_llm_text(result):
-    if isinstance(result, list) and result:
-        first_item = result[0]
-
-        if isinstance(first_item, dict):
-            return first_item.get("generated_text", str(first_item))
-
-    if isinstance(result, dict):
-        return result.get("generated_text", str(result))
-
-    return str(result)
+    return response.choices[0].message.content
 
 
 @app.post("/analyze")
@@ -150,8 +138,7 @@ def analyze_logs(request: LogAnalysisRequest):
 
     try:
         prompt = build_prompt(request)
-        llm_result = call_llm(prompt)
-        llm_text = extract_llm_text(llm_result)
+        llm_text = call_llm(prompt)
 
         return {
             "agent": "log-agent",
