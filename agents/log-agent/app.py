@@ -72,7 +72,7 @@ def build_prompt(request: LogAnalysisRequest):
     stderr_tail = request.stderr[-3500:] if request.stderr else "No stderr output."
 
     return f"""
-You are an expert software QA engineer.
+You are a senior software QA engineer.
 
 Analyze this software build/test execution result.
 
@@ -94,7 +94,8 @@ STDOUT:
 STDERR:
 {stderr_tail}
 
-Return a concise QA analysis with these sections:
+Write a concise QA analysis using exactly these sections:
+
 Summary:
 Root Cause:
 Issues:
@@ -114,22 +115,14 @@ def call_llm(prompt: str):
         timeout=60
     )
 
-    response = client.chat_completion(
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a senior QA engineer who explains build logs clearly and concisely."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        max_tokens=400,
-        temperature=0.2
+    response = client.text_generation(
+        prompt=prompt,
+        max_new_tokens=400,
+        temperature=0.2,
+        return_full_text=False
     )
 
-    return response.choices[0].message.content
+    return response
 
 
 @app.post("/analyze")
