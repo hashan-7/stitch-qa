@@ -99,10 +99,15 @@ def scan(path, run, analyze, repair, agent_url, repair_agent_url):
                 agent_data = analysis_result["data"]
 
                 console.print(f"[bold]Agent:[/bold] {agent_data.get('agent')}")
+                console.print(f"[bold]Mode:[/bold] {agent_data.get('mode', 'unknown')}")
                 console.print(f"[bold]Final Status:[/bold] {agent_data.get('final_status')}")
                 console.print(f"[bold]Summary:[/bold] {agent_data.get('summary')}")
                 console.print(f"[bold]Root Cause:[/bold] {agent_data.get('root_cause')}")
                 console.print(f"[bold]Recommendation:[/bold] {agent_data.get('recommendation')}")
+
+                if agent_data.get("llm_error"):
+                    console.print("\n[bold red]LLM Error[/bold red]")
+                    console.print(agent_data.get("llm_error"))
 
                 console.print("\n[bold cyan]Issues[/bold cyan]")
                 for issue in agent_data.get("issues", []):
