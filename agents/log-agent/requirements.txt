@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 pydantic
-requests
-huggingface_hub
+transformers
+torch
+sentencepiece
