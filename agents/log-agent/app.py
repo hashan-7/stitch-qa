@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import os
+import re
 
 HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-small")
 
@@ -39,6 +40,58 @@ def load_model():
         model = AutoModelForSeq2SeqLM.from_pretrained(HF_MODEL)
 
     return tokenizer, model
+
+
+def extract_test_result(logs: str):
+    match = re.search(
+        r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)",
+        logs,
+        re.IGNORECASE
+    )
+
+    if not match:
+        return "Test result could not be extracted from logs."
+
+    tests_run, failures, errors, skipped = match.groups()
+
+    return (
+        f"Tests run: {tests_run}, "
+        f"Failures: {failures}, "
+        f"Errors: {errors}, "
+        f"Skipped: {skipped}"
+    )
+
+
+def extract_facts(request: LogAnalysisRequest):
+    combined_logs = f"{request.stdout}\n{request.stderr}"
+    lower_logs = combined_logs.lower()
+
+    build_status = "SUCCESS" if "build success" in lower_logs else "FAILED"
+
+    test_result = extract_test_result(combined_logs)
+
+    warning_items = []
+
+    if "warning" in lower_logs:
+        warning_items.append("Warnings were detected in execution logs.")
+
+    if "mockito" in lower_logs and "dynamic loading of agents" in lower_logs:
+        warning_items.append(
+            "Mockito dynamic Java agent loading warning was detected. This is not a current test failure, but it may affect future JDK compatibility."
+        )
+
+    if not warning_items:
+        warning_items.append("No important warning was detected.")
+
+    return {
+        "project_type": request.project_type,
+        "command": request.command,
+        "exit_code": request.exit_code,
+        "success": request.success,
+        "build_status": build_status,
+        "test_result": test_result,
+        "warnings": warning_items
+    }
 
 
 def rule_based_analysis(request: LogAnalysisRequest):
@@ -80,31 +133,45 @@ def rule_based_analysis(request: LogAnalysisRequest):
     }
 
 
-def build_prompt(request: LogAnalysisRequest):
-    stdout_tail = request.stdout[-1200:] if request.stdout else "No stdout output."
-    stderr_tail = request.stderr[-1200:] if request.stderr else "No stderr output."
+def build_clean_summary(facts, fallback_result):
+    warning_text = " ".join(facts["warnings"])
+
+    if facts["success"]:
+        return (
+            f"The {facts['project_type']} project was executed using `{facts['command']}`. "
+            f"The build completed successfully with exit code {facts['exit_code']}. "
+            f"{facts['test_result']}. "
+            f"No blocking runtime error was detected. "
+            f"{warning_text}"
+        )
+
+    return (
+        f"The {facts['project_type']} project execution failed while running `{facts['command']}`. "
+        f"The process ended with exit code {facts['exit_code']}. "
+        f"{facts['test_result']}. "
+        f"Review the execution logs and stack traces to identify the failing file or test. "
+        f"{warning_text}"
+    )
+
+
+def build_prompt(facts):
+    warnings_text = " ".join(facts["warnings"])
 
     return f"""
-Analyze this software QA execution.
+Rewrite these QA facts into a short professional QA summary.
 
-Project type: {request.project_type}
-Command: {request.command}
-Exit code: {request.exit_code}
-Success: {request.success}
+Project type: {facts["project_type"]}
+Command: {facts["command"]}
+Build status: {facts["build_status"]}
+Exit code: {facts["exit_code"]}
+Execution success: {facts["success"]}
+Test result: {facts["test_result"]}
+Warnings: {warnings_text}
 
-Build output:
-{stdout_tail}
-
-Warnings or errors:
-{stderr_tail}
-
-Write short QA result:
-Summary:
-Root cause:
-Issues:
-Warnings:
-Recommendation:
-Final status:
+Do not copy raw logs.
+Do not include [INFO] lines.
+Do not include separator lines.
+Write one clean paragraph only.
 """
 
 
@@ -120,33 +187,63 @@ def call_llm(prompt: str):
 
     outputs = active_model.generate(
         **inputs,
-        max_new_tokens=180,
-        do_sample=False
+        max_new_tokens=160,
+        do_sample=False,
+        num_beams=2
     )
 
     return active_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 
+def clean_llm_output(text: str):
+    cleaned = text.strip()
+
+    bad_patterns = [
+        "[INFO]",
+        "-----",
+        "=====",
+        "org.springframework",
+        "junitplatform",
+        "DemoApplicationTests"
+    ]
+
+    if not cleaned:
+        return None
+
+    if any(pattern.lower() in cleaned.lower() for pattern in bad_patterns):
+        return None
+
+    if len(cleaned) < 25:
+        return None
+
+    return cleaned
+
+
 @app.post("/analyze")
 def analyze_logs(request: LogAnalysisRequest):
     fallback_result = rule_based_analysis(request)
+    facts = extract_facts(request)
+    clean_summary = build_clean_summary(facts, fallback_result)
 
     try:
-        prompt = build_prompt(request)
+        prompt = build_prompt(facts)
         llm_text = call_llm(prompt)
+        cleaned_llm_text = clean_llm_output(llm_text)
+
+        final_summary = cleaned_llm_text if cleaned_llm_text else clean_summary
 
         return {
             "agent": "log-agent",
             "mode": "llm",
             "final_status": "PASS" if request.success else "FAIL",
-            "summary": llm_text,
+            "summary": final_summary,
             "issues": fallback_result["issues"],
             "warnings": fallback_result["warnings"],
-            "root_cause": "Generated by local FLAN-T5 model. See summary for detailed reasoning.",
-            "recommendation": "Review the LLM summary and fallback issue list before taking action."
+            "root_cause": "No blocking runtime error detected." if request.success else "Execution failed. Review logs and stack traces.",
+            "recommendation": "Project passed current test execution. Review warnings for future compatibility." if request.success else "Fix the detected failure and rerun Stitch QA."
         }
 
     except Exception as error:
         fallback_result["llm_error"] = repr(error)
-        fallback_result["summary"] = f"LLM failed, fallback rule-based analysis used. Error: {repr(error)}"
+        fallback_result["summary"] = clean_summary
         return fallback_result
