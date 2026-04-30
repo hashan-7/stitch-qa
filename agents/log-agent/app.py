@@ -4,7 +4,7 @@ from huggingface_hub import InferenceClient
 import os
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-HF_MODEL = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
+HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-large")
 
 app = FastAPI(title="Stitch QA Log Agent")
 
