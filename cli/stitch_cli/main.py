@@ -20,13 +20,11 @@ def cli():
 @click.option("--repair", is_flag=True, help="Send execution logs to the repair agent.")
 @click.option(
     "--agent-url",
-    default="http://127.0.0.1:7860",
-    help="Log agent API base URL.",
+    default="https://hashan-7-stitch-qa-log-agent.hf.space",
 )
 @click.option(
     "--repair-agent-url",
-    default="http://127.0.0.1:7861",
-    help="Repair agent API base URL.",
+    default="https://hashan-7-stitch-qa-repair-agent.hf.space",
 )
 def scan(path, run, analyze, repair, agent_url, repair_agent_url):
     try:
