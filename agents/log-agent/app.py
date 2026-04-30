@@ -145,5 +145,6 @@ def analyze_logs(request: LogAnalysisRequest):
         }
 
     except Exception as error:
-        fallback_result["llm_error"] = str(error)
+        fallback_result["llm_error"] = repr(error)
+        fallback_result["summary"] = f"LLM failed, fallback rule-based analysis used. Error: {repr(error)}"
         return fallback_result
