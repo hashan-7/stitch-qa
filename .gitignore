@@ -2,6 +2,11 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 target/
 build/
@@ -9,12 +14,19 @@ dist/
 
 *.log
 .env
+.env.*
 
 stitch_cli.egg-info/
 *.egg-info/
 
 STITCH_QA_REPORT.md
+STITCH_QA_REPORT.json
 
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
+
+.huggingface/
+.cache/
+*.tmp

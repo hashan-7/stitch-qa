@@ -1,54 +1,100 @@
 from pathlib import Path
 from datetime import datetime
+import json
+
+
+def format_list(items):
+    if not items:
+        return []
+
+    return items
+
+
+def safe_value(value, default=None):
+    if value is None or value == "":
+        return default
+    return value
+
+
+def build_status_label(execution_result, agent_data=None):
+    if agent_data and agent_data.get("final_status"):
+        return agent_data.get("final_status")
+
+    return "PASS" if execution_result["success"] else "FAIL"
 
 
 def generate_report(scan_result, execution_result, agent_data=None, repair_data=None):
     project_path = Path(scan_result["project_path"])
-    report_path = project_path / "STITCH_QA_REPORT.md"
+
+    md_report_path = project_path / "STITCH_QA_REPORT.md"
+    json_report_path = project_path / "STITCH_QA_REPORT.json"
 
     static_map = scan_result["static_map"]
 
-    final_status = "PASS" if execution_result["success"] else "FAIL"
+    final_status = build_status_label(execution_result, agent_data)
 
-    stdout_text = execution_result["stdout"][-2000:] if execution_result["stdout"] else "No stdout output."
-    stderr_text = execution_result["stderr"][-2000:] if execution_result["stderr"] else "No stderr output."
+    stdout_text = execution_result["stdout"][-2000:] if execution_result["stdout"] else ""
+    stderr_text = execution_result["stderr"][-2000:] if execution_result["stderr"] else ""
 
-    ai_section = ""
+    # =========================
+    # JSON STRUCTURE
+    # =========================
 
-    if agent_data:
-        issues = "\n".join(f"- {i}" for i in agent_data.get("issues", []))
-        warnings = "\n".join(f"- {w}" for w in agent_data.get("warnings", []))
+    json_content = {
+        "project": {
+            "path": scan_result["project_path"],
+            "type": scan_result["project_type"],
+            "total_files": scan_result["total_files"],
+            "total_folders": scan_result["total_folders"],
+            "ignored_items": scan_result["ignored_items"],
+        },
+        "static_mapping": {
+            "build_file": static_map.get("build_file"),
+            "main_source_dir": static_map.get("main_source_dir"),
+            "test_source_dir": static_map.get("test_source_dir"),
+            "main_file": static_map.get("main_file"),
+            "suggested_command": static_map.get("suggested_command"),
+        },
+        "execution": {
+            "command": execution_result["command"],
+            "success": execution_result["success"],
+            "exit_code": execution_result["exit_code"],
+        },
+        "log_agent": {
+            "agent": safe_value(agent_data.get("agent") if agent_data else None),
+            "mode": safe_value(agent_data.get("mode") if agent_data else None),
+            "final_status": safe_value(agent_data.get("final_status") if agent_data else None),
+            "summary": safe_value(agent_data.get("summary") if agent_data else None),
+            "root_cause": safe_value(agent_data.get("root_cause") if agent_data else None),
+            "recommendation": safe_value(agent_data.get("recommendation") if agent_data else None),
+            "issues": format_list(agent_data.get("issues") if agent_data else []),
+            "warnings": format_list(agent_data.get("warnings") if agent_data else []),
+        },
+        "repair_agent": {
+            "agent": safe_value(repair_data.get("agent") if repair_data else None),
+            "mode": safe_value(repair_data.get("mode") if repair_data else None),
+            "risk_level": safe_value(repair_data.get("risk_level") if repair_data else None),
+            "auto_apply": safe_value(repair_data.get("auto_apply") if repair_data else None),
+            "summary": safe_value(repair_data.get("summary") if repair_data else None),
+            "suggestions": format_list(repair_data.get("suggestions") if repair_data else []),
+            "next_action": safe_value(repair_data.get("next_action") if repair_data else None),
+        },
+        "evidence": {
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+        },
+        "final_status": final_status,
+        "generated_at": str(datetime.now()),
+    }
 
-        ai_section = (
-            "\n## AI Log Analysis\n\n"
-            f"Agent: {agent_data.get('agent')}\n\n"
-            f"Final Status: {agent_data.get('final_status')}\n\n"
-            f"Summary: {agent_data.get('summary')}\n\n"
-            f"Root Cause: {agent_data.get('root_cause')}\n\n"
-            f"Recommendation: {agent_data.get('recommendation')}\n\n"
-            "### Issues\n"
-            f"{issues or 'None'}\n\n"
-            "### Warnings\n"
-            f"{warnings or 'None'}\n\n"
-        )
+    # write JSON
+    json_report_path.write_text(json.dumps(json_content, indent=2), encoding="utf-8")
 
-    repair_section = ""
+    # =========================
+    # MARKDOWN (existing style)
+    # =========================
 
-    if repair_data:
-        suggestions = "\n".join(f"- {s}" for s in repair_data.get("suggestions", []))
-
-        repair_section = (
-            "\n## Repair Agent Suggestions\n\n"
-            f"Agent: {repair_data.get('agent')}\n\n"
-            f"Risk Level: {repair_data.get('risk_level')}\n\n"
-            f"Auto Apply: {repair_data.get('auto_apply')}\n\n"
-            f"Summary: {repair_data.get('summary')}\n\n"
-            f"Next Action: {repair_data.get('next_action')}\n\n"
-            "### Suggestions\n"
-            f"{suggestions or 'None'}\n\n"
-        )
-
-    content = (
+    md_content = (
         "# Stitch QA Report\n\n"
 
         "## Project Summary\n\n"
@@ -70,18 +116,11 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
         f"- Success: {execution_result['success']}\n"
         f"- Exit Code: {execution_result['exit_code']}\n\n"
 
-        "## STDOUT Summary\n\n"
-        "----------------------------------------\n"
-        f"{stdout_text}\n"
-        "----------------------------------------\n\n"
+        "## AI Log Analysis\n\n"
+        f"{agent_data.get('summary') if agent_data else 'Not available'}\n\n"
 
-        "## STDERR / Warnings\n\n"
-        "----------------------------------------\n"
-        f"{stderr_text}\n"
-        "----------------------------------------\n\n"
-
-        + ai_section
-        + repair_section +
+        "## Repair Suggestions\n\n"
+        f"{repair_data.get('summary') if repair_data else 'Not available'}\n\n"
 
         "## Final QA Status\n\n"
         f"{final_status}\n\n"
@@ -90,6 +129,6 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
         f"Generated At: {datetime.now()}\n"
     )
 
-    report_path.write_text(content, encoding="utf-8")
+    md_report_path.write_text(md_content, encoding="utf-8")
 
-    return report_path
+    return md_report_path

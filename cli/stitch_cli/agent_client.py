@@ -1,6 +1,9 @@
 import requests
 
 
+DEFAULT_AGENT_TIMEOUT_SECONDS = 120
+
+
 def analyze_logs_with_agent(agent_url, scan_result, execution_result):
     payload = {
         "project_type": scan_result["project_type"],
@@ -15,7 +18,7 @@ def analyze_logs_with_agent(agent_url, scan_result, execution_result):
         response = requests.post(
             f"{agent_url}/analyze",
             json=payload,
-            timeout=30,
+            timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         return {
@@ -47,7 +50,7 @@ def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, a
         response = requests.post(
             f"{repair_agent_url}/suggest",
             json=payload,
-            timeout=30,
+            timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         return {
