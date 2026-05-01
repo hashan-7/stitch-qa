@@ -8,6 +8,7 @@ from stitch_cli.agent_client import (
     suggest_repair_with_agent,
     suggest_code_fix_with_agent,
 )
+from stitch_cli.code_cli import run_analyze_code
 
 console = Console()
 
@@ -15,6 +16,15 @@ console = Console()
 @click.group()
 def cli():
     pass
+
+
+@cli.command("analyze-code")
+@click.option(
+    "--code-agent-url",
+    default="https://hashan-7-stitch-qa-code-agent.hf.space",
+)
+def analyze_code(code_agent_url):
+    run_analyze_code(code_agent_url)
 
 
 @cli.command()
@@ -198,4 +208,4 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         )
         console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
 
-    console.print("\n[bold yellow]Next:[/bold yellow] Scanner ignore list will be cleaned next.")
+    console.print("\n[bold yellow]Next:[/bold yellow] Analyze-code CLI will be tested next.")
