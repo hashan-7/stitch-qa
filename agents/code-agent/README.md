@@ -10,4 +10,5 @@ license: mit
 
 # Stitch QA Code Agent
 
+
 Generates code-level repair suggestions and patch guidance for Stitch QA using a code-focused model.

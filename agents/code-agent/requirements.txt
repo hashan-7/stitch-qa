@@ -4,4 +4,5 @@ pydantic
 transformers
 torch
 sentencepiece
+
 accelerate

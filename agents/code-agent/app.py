@@ -234,3 +234,4 @@ def suggest_code_fix(request: CodeRepairRequest):
     except Exception as error:
         fallback_result["llm_error"] = repr(error)
         return fallback_result
+    
