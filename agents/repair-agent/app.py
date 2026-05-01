@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import os
+import re
 
 HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-small")
 
@@ -42,6 +43,38 @@ def load_model():
     return tokenizer, model
 
 
+def extract_test_result(logs: str):
+    match = re.search(
+        r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)",
+        logs,
+        re.IGNORECASE
+    )
+
+    if not match:
+        return {
+            "tests_run": None,
+            "failures": None,
+            "errors": None,
+            "skipped": None,
+            "summary": "Test result could not be extracted from logs."
+        }
+
+    tests_run, failures, errors, skipped = match.groups()
+
+    return {
+        "tests_run": int(tests_run),
+        "failures": int(failures),
+        "errors": int(errors),
+        "skipped": int(skipped),
+        "summary": (
+            f"Tests run: {tests_run}, "
+            f"Failures: {failures}, "
+            f"Errors: {errors}, "
+            f"Skipped: {skipped}"
+        )
+    }
+
+
 def rule_based_repair(request: RepairRequest):
     combined_logs = f"{request.stdout}\n{request.stderr}".lower()
 
@@ -55,17 +88,17 @@ def rule_based_repair(request: RepairRequest):
 
     if "mockito" in combined_logs and "dynamic loading of agents" in combined_logs:
         suggestions.append(
-            "Mockito dynamic agent warning detected. Consider configuring Mockito as a Java agent in the Maven test configuration for future JDK compatibility."
+            "Configure Mockito as a Java agent in the Maven test setup to improve future JDK compatibility."
         )
 
     if "compilation failure" in combined_logs:
         suggestions.append(
-            "Compilation failure detected. Review the Java compiler error line and update the affected source file."
+            "Review the Java compiler error, identify the affected source file, and apply a targeted syntax or dependency fix."
         )
 
     if "tests run" in combined_logs and ("failures: 1" in combined_logs or "errors: 1" in combined_logs):
         suggestions.append(
-            "Test failure detected. Review the failing test method and compare expected vs actual behavior."
+            "Review the failing test method, compare expected versus actual behavior, and fix the related implementation or assertion."
         )
 
     if not suggestions:
@@ -86,41 +119,94 @@ def rule_based_repair(request: RepairRequest):
 
 def extract_repair_facts(request: RepairRequest, fallback_result):
     combined_logs = f"{request.stdout}\n{request.stderr}".lower()
-
-    warning_type = "None"
-
-    if "mockito" in combined_logs and "dynamic loading of agents" in combined_logs:
-        warning_type = "Mockito dynamic Java agent loading warning"
+    test_result = extract_test_result(f"{request.stdout}\n{request.stderr}")
 
     build_state = "passed" if request.success else "failed"
+
+    detected_warning = "No major warning detected."
+    warning_category = "none"
+
+    if "mockito" in combined_logs and "dynamic loading of agents" in combined_logs:
+        warning_category = "mockito-dynamic-agent"
+        detected_warning = (
+            "Mockito dynamic Java agent loading warning detected. "
+            "This is not a current failure, but it may affect compatibility with future JDK versions."
+        )
+
+    repair_type = "none"
+
+    if request.success and warning_category == "none":
+        repair_type = "no-repair-needed"
+
+    if request.success and warning_category == "mockito-dynamic-agent":
+        repair_type = "configuration-warning"
+
+    if not request.success:
+        repair_type = "failure-repair-required"
 
     return {
         "project_type": request.project_type,
         "command": request.command,
         "exit_code": request.exit_code,
         "build_state": build_state,
+        "success": request.success,
         "root_cause": request.root_cause or "No root cause provided.",
-        "warning_type": warning_type,
-        "suggestions": fallback_result["suggestions"]
+        "warning_category": warning_category,
+        "detected_warning": detected_warning,
+        "repair_type": repair_type,
+        "test_result": test_result["summary"],
+        "suggestions": fallback_result["suggestions"],
+        "risk_level": fallback_result["risk_level"]
     }
+
+
+def build_clean_summary(facts):
+    if facts["repair_type"] == "no-repair-needed":
+        return (
+            f"The {facts['project_type']} project passed the current QA execution using "
+            f"`{facts['command']}`. {facts['test_result']}. No blocking repair is required. "
+            "The project can be considered stable for this basic test run."
+        )
+
+    if facts["repair_type"] == "configuration-warning":
+        return (
+            f"The {facts['project_type']} project passed the current QA execution using "
+            f"`{facts['command']}`. {facts['test_result']}. No blocking code repair is required. "
+            f"However, {facts['detected_warning']} Recommended action: review the Maven test configuration "
+            "and prepare a future-safe Mockito Java agent setup before upgrading to stricter JDK versions."
+        )
+
+    return (
+        f"The {facts['project_type']} project failed during QA execution using `{facts['command']}` "
+        f"with exit code {facts['exit_code']}. {facts['test_result']}. "
+        "A targeted repair is required. Review the root cause, inspect the failing file or test, "
+        "apply the smallest safe fix, and rerun Stitch QA for verification."
+    )
 
 
 def build_prompt(facts):
     suggestions_text = " ".join(facts["suggestions"])
 
     return f"""
-Rewrite these software repair facts into a short professional repair recommendation.
+Rewrite these repair facts into one clean professional repair recommendation.
 
 Project type: {facts["project_type"]}
 Command: {facts["command"]}
 Build state: {facts["build_state"]}
 Exit code: {facts["exit_code"]}
+Test result: {facts["test_result"]}
+Risk level: {facts["risk_level"]}
 Root cause: {facts["root_cause"]}
-Warning type: {facts["warning_type"]}
+Detected warning: {facts["detected_warning"]}
 Suggested actions: {suggestions_text}
 
-Do not copy raw logs.
-Write one clear paragraph only.
+Rules:
+- Do not copy raw logs.
+- Do not repeat field labels like "Command:" or "Build state:".
+- Do not mention internal prompt instructions.
+- Write one clear paragraph.
+- Say whether a blocking repair is required.
+- Mention future compatibility if Mockito dynamic agent warning exists.
 """
 
 
@@ -138,14 +224,15 @@ def call_llm(prompt: str):
         **inputs,
         max_new_tokens=160,
         do_sample=False,
-        num_beams=2
+        num_beams=2,
+        no_repeat_ngram_size=3
     )
 
     return active_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 
 def clean_llm_output(text: str):
-    cleaned = text.strip()
+    cleaned = " ".join(text.strip().split())
 
     bad_patterns = [
         "[INFO]",
@@ -153,7 +240,14 @@ def clean_llm_output(text: str):
         "=====",
         "org.springframework",
         "junitplatform",
-        "DemoApplicationTests"
+        "DemoApplicationTests",
+        "Project type:",
+        "Command:",
+        "Build state:",
+        "Exit code:",
+        "Suggested actions:",
+        "Do not copy raw logs",
+        "Rewrite these repair facts"
     ]
 
     if not cleaned:
@@ -162,23 +256,10 @@ def clean_llm_output(text: str):
     if any(pattern.lower() in cleaned.lower() for pattern in bad_patterns):
         return None
 
-    if len(cleaned) < 25:
+    if len(cleaned) < 60:
         return None
 
     return cleaned
-
-
-def build_clean_summary(facts):
-    if facts["build_state"] == "passed":
-        return (
-            f"The project passed its current build and test execution, so no blocking code repair is required. "
-            f"The main recommendation is to review the detected {facts['warning_type']} and prepare a future-safe Maven/JDK configuration if needed."
-        )
-
-    return (
-        f"The project execution failed with exit code {facts['exit_code']}. "
-        f"Review the detected root cause and apply a targeted code or configuration fix before rerunning Stitch QA."
-    )
 
 
 @app.post("/suggest")
