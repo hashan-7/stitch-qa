@@ -3,7 +3,11 @@ from rich.console import Console
 from stitch_cli.scanner import scan_project
 from stitch_cli.executor import execute_command
 from stitch_cli.reporter import generate_report
-from stitch_cli.agent_client import analyze_logs_with_agent, suggest_repair_with_agent
+from stitch_cli.agent_client import (
+    analyze_logs_with_agent,
+    suggest_repair_with_agent,
+    suggest_code_fix_with_agent,
+)
 
 console = Console()
 
@@ -18,6 +22,7 @@ def cli():
 @click.option("--run", is_flag=True, help="Run the suggested project command.")
 @click.option("--analyze", is_flag=True, help="Send execution logs to the log agent.")
 @click.option("--repair", is_flag=True, help="Send execution logs to the repair agent.")
+@click.option("--code-fix", is_flag=True, help="Send repair context to the code agent.")
 @click.option(
     "--agent-url",
     default="https://hashan-7-stitch-qa-log-agent.hf.space",
@@ -26,7 +31,11 @@ def cli():
     "--repair-agent-url",
     default="https://hashan-7-stitch-qa-repair-agent.hf.space",
 )
-def scan(path, run, analyze, repair, agent_url, repair_agent_url):
+@click.option(
+    "--code-agent-url",
+    default="https://hashan-7-stitch-qa-code-agent.hf.space",
+)
+def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code_agent_url):
     try:
         result = scan_project(path)
     except Exception as error:
@@ -60,14 +69,19 @@ def scan(path, run, analyze, repair, agent_url, repair_agent_url):
     if result["total_files"] > 20:
         console.print(f"... and {result['total_files'] - 20} more files")
 
-    if (analyze or repair) and not run:
-        console.print("\n[bold red]Analyze/repair requires --run.[/bold red]")
-        console.print("Use: stitch scan demo --run --analyze --repair")
+    if (analyze or repair or code_fix) and not run:
+        console.print("\n[bold red]Analyze/repair/code-fix requires --run.[/bold red]")
+        console.print("Use: stitch scan demo --run --analyze --repair --code-fix")
         return
+
+    if code_fix and not repair:
+        console.print("\n[bold yellow]Warning:[/bold yellow] --code-fix works best with --repair.")
+        console.print("Recommended: stitch scan demo --run --analyze --repair --code-fix")
 
     if run:
         agent_data = None
         repair_data = None
+        code_data = None
 
         console.print("\n[bold magenta]Execution Started[/bold magenta]")
 
@@ -134,6 +148,7 @@ def scan(path, run, analyze, repair, agent_url, repair_agent_url):
                 repair_data = repair_result["data"]
 
                 console.print(f"[bold]Agent:[/bold] {repair_data.get('agent')}")
+                console.print(f"[bold]Mode:[/bold] {repair_data.get('mode', 'unknown')}")
                 console.print(f"[bold]Risk Level:[/bold] {repair_data.get('risk_level')}")
                 console.print(f"[bold]Auto Apply:[/bold] {repair_data.get('auto_apply')}")
                 console.print(f"[bold]Summary:[/bold] {repair_data.get('summary')}")
@@ -146,7 +161,41 @@ def scan(path, run, analyze, repair, agent_url, repair_agent_url):
                 console.print("[bold red]Repair agent request failed.[/bold red]")
                 console.print(repair_result["error"])
 
-        report_path = generate_report(result, execution_result, agent_data, repair_data)
+        if code_fix:
+            console.print("\n[bold magenta]Code Agent Started[/bold magenta]")
+
+            code_result = suggest_code_fix_with_agent(
+                code_agent_url,
+                result,
+                execution_result,
+                agent_data,
+                repair_data,
+            )
+
+            if code_result["success"]:
+                code_data = code_result["data"]
+
+                console.print(f"[bold]Agent:[/bold] {code_data.get('agent')}")
+                console.print(f"[bold]Mode:[/bold] {code_data.get('mode', 'unknown')}")
+                console.print(f"[bold]Risk Level:[/bold] {code_data.get('risk_level')}")
+                console.print(f"[bold]Auto Apply:[/bold] {code_data.get('auto_apply')}")
+                console.print(f"[bold]Summary:[/bold] {code_data.get('summary')}")
+                console.print(f"[bold]Verification:[/bold] {code_data.get('verification')}")
+
+                if code_data.get("llm_error"):
+                    console.print("\n[bold red]Code Agent LLM Error[/bold red]")
+                    console.print(code_data.get("llm_error"))
+            else:
+                console.print("[bold red]Code agent request failed.[/bold red]")
+                console.print(code_result["error"])
+
+        report_path = generate_report(
+            result,
+            execution_result,
+            agent_data,
+            repair_data,
+            code_data,
+        )
         console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
 
-    console.print("\n[bold yellow]Next:[/bold yellow] HF model integration will be added next.")
+    console.print("\n[bold yellow]Next:[/bold yellow] Scanner ignore list will be cleaned next.")

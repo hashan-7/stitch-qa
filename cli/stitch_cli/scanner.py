@@ -22,8 +22,16 @@ IGNORED_SUFFIXES = {
     ".egg-info",
 }
 
+IGNORED_FILES = {
+    "STITCH_QA_REPORT.md",
+    "STITCH_QA_REPORT.json",
+}
+
 
 def should_ignore(relative_path):
+    if relative_path.name in IGNORED_FILES:
+        return True
+
     for part in relative_path.parts:
         if part in IGNORED_DIRS:
             return True
