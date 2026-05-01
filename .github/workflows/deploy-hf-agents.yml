@@ -7,6 +7,7 @@ on:
     paths:
       - "agents/log-agent/**"
       - "agents/repair-agent/**"
+      - "agents/code-agent/**"
       - ".github/workflows/deploy-hf-agents.yml"
   workflow_dispatch:
 
@@ -58,3 +59,27 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           hf upload hashan-7/stitch-qa-repair-agent hf-repair-agent . --repo-type=space --delete="*" --commit-message="Deploy repair agent from GitHub Actions"
+
+  deploy-code-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v6
+
+      - name: Install Hugging Face CLI
+        run: pip install -U huggingface_hub
+
+      - name: Prepare code agent files
+        run: |
+          mkdir -p hf-code-agent
+          cp agents/code-agent/app.py hf-code-agent/
+          cp agents/code-agent/requirements.txt hf-code-agent/
+          cp agents/code-agent/Dockerfile hf-code-agent/
+          cp agents/code-agent/README.md hf-code-agent/
+
+      - name: Deploy code agent to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          hf upload hashan-7/stitch-qa-code-agent hf-code-agent . --repo-type=space --delete="*" --commit-message="Deploy code agent from GitHub Actions"
