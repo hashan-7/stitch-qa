@@ -86,7 +86,7 @@ mvn test
 Clone the repository:
 
 ```powershell
-git clone <your-repo-url>
+git clone https://github.com/hashan-7/stitch-qa.git
 cd stitch-qa
 ```
 
@@ -279,3 +279,10 @@ Node.js, Python, Gradle, React/Vite and other project support
 ## License
 
 This project is currently prepared as a development and demonstration project.
+##
+
+<div align="center">
+
+**Developed by 💜 h7**  
+
+</div>
