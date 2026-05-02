@@ -22,6 +22,8 @@ class CodeRepairRequest(BaseModel):
     repair_summary: str | None = None
     failure_type: str | None = None
     help_message: str | None = None
+    success: bool | None = None
+    exit_code: int | None = None
 
 
 @app.get("/")
@@ -47,6 +49,95 @@ def load_model():
         )
 
     return tokenizer, model
+
+
+def combined_context(request: CodeRepairRequest):
+    return f"""
+{request.error_log or ""}
+{request.root_cause or ""}
+{request.repair_summary or ""}
+{request.code_snippet or ""}
+""".lower()
+
+
+def has_mockito_warning(request: CodeRepairRequest):
+    context = combined_context(request)
+
+    return (
+        "mockito" in context
+        and (
+            "dynamic loading of agents" in context
+            or "dynamic java agent" in context
+            or "self-attaching" in context
+            or "java agent" in context
+        )
+    )
+
+
+def is_successful_execution(request: CodeRepairRequest):
+    context = combined_context(request)
+
+    if request.success is True:
+        return True
+
+    if request.exit_code == 0:
+        return True
+
+    if "passed the current qa execution" in context:
+        return True
+
+    if "build completed successfully" in context:
+        return True
+
+    if "tests run:" in context and "failures: 0" in context and "errors: 0" in context:
+        return True
+
+    if "no blocking runtime error detected" in context:
+        return True
+
+    return False
+
+
+def get_successful_execution_guidance(request: CodeRepairRequest):
+    if not is_successful_execution(request):
+        return None
+
+    if has_mockito_warning(request):
+        summary = (
+            "Problem: The project build and tests passed successfully, but a Mockito dynamic Java agent loading warning was detected.\n\n"
+            "Safe fix approach: This is not a blocking application code failure. Do not change Java source files just because of this warning. "
+            "Review the Maven test configuration and prepare a future-safe Mockito Java agent setup for newer JDK compatibility.\n\n"
+            "Suggested code change: No application source code change is required. If you want to remove the warning, update the Maven test configuration "
+            "to load Mockito as a Java agent according to Mockito documentation.\n\n"
+            "Verification step: Rerun the Maven test command and confirm tests still pass with zero failures and zero errors."
+        )
+
+        return {
+            "agent": "code-agent",
+            "mode": "rule-based",
+            "summary": summary,
+            "risk_level": "LOW",
+            "auto_apply": False,
+            "suggested_patch": None,
+            "verification": "No source-code fix is required. Review Maven test configuration only if you want to address the Mockito warning."
+        }
+
+    summary = (
+        "Problem: No blocking code-level failure was detected.\n\n"
+        "Safe fix approach: The project build and tests passed successfully. No repair should be applied to application source files.\n\n"
+        "Suggested code change: No code change is required.\n\n"
+        "Verification step: Keep the current passing state and rerun Stitch QA after future changes."
+    )
+
+    return {
+        "agent": "code-agent",
+        "mode": "rule-based",
+        "summary": summary,
+        "risk_level": "LOW",
+        "auto_apply": False,
+        "suggested_patch": None,
+        "verification": "No code fix is required because the current execution passed."
+    }
 
 
 def get_environment_guidance(request: CodeRepairRequest):
@@ -130,6 +221,12 @@ Project type:
 File path:
 {file_path}
 
+Execution success:
+{request.success}
+
+Exit code:
+{request.exit_code}
+
 Failure type:
 {failure_type}
 
@@ -154,6 +251,8 @@ Return only these sections:
 3. Suggested code change
 4. Verification step
 
+If execution success is true or exit code is 0, do not say the project failed.
+If tests passed and only warnings exist, say no blocking application source code change is required.
 If the failure is Maven not available or Maven Wrapper missing, clearly say no application source code change is required.
 Do not include system/user/assistant labels.
 Do not repeat the prompt.
@@ -210,6 +309,11 @@ def fallback_code_guidance(request: CodeRepairRequest):
 
     if environment_guidance:
         return environment_guidance
+
+    successful_guidance = get_successful_execution_guidance(request)
+
+    if successful_guidance:
+        return successful_guidance
 
     if request.error_log:
         summary = (
@@ -271,7 +375,7 @@ def remove_prompt_leak(text: str):
     return cleaned.strip()
 
 
-def clean_output(text: str):
+def clean_output(text: str, request: CodeRepairRequest):
     cleaned = remove_prompt_leak(text)
     if not cleaned:
         return None
@@ -298,6 +402,18 @@ def clean_output(text: str):
     if any(pattern.lower() in cleaned.lower() for pattern in bad_patterns):
         return None
 
+    if is_successful_execution(request):
+        incorrect_failure_phrases = [
+            "failed to pass",
+            "project failed",
+            "build failed",
+            "tests failed",
+            "failed during qa execution"
+        ]
+
+        if any(phrase in cleaned.lower() for phrase in incorrect_failure_phrases):
+            return None
+
     return cleaned
 
 
@@ -308,12 +424,17 @@ def suggest_code_fix(request: CodeRepairRequest):
     if environment_guidance:
         return environment_guidance
 
+    successful_guidance = get_successful_execution_guidance(request)
+
+    if successful_guidance:
+        return successful_guidance
+
     fallback_result = fallback_code_guidance(request)
 
     try:
         prompt = build_prompt(request)
         llm_text = call_llm(prompt)
-        cleaned_text = clean_output(llm_text)
+        cleaned_text = clean_output(llm_text, request)
 
         if not cleaned_text:
             return fallback_result
