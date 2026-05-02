@@ -278,7 +278,7 @@ Node.js, Python, Gradle, React/Vite and other project support
 
 ## License
 
-This project is currently prepared as a development and demonstration project.
+This project is released under the MIT License.
 ##
 
 <div align="center">
