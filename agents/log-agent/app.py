@@ -225,7 +225,7 @@ def build_prompt(facts):
     help_message = facts.get("help_message") or "None"
 
     return f"""
-Rewrite these QA facts into a short professional QA summary.
+Write one short professional QA summary paragraph.
 
 Project type: {facts["project_type"]}
 Command: {facts["command"]}
@@ -237,11 +237,14 @@ Failure type: {failure_type}
 Help message: {help_message}
 Warnings: {warnings_text}
 
-If failure type is MAVEN_NOT_AVAILABLE, clearly say this is an environment setup issue, not a confirmed code failure.
-Do not copy raw logs.
-Do not include [INFO] lines.
-Do not include separator lines.
-Write one clean paragraph only.
+Rules:
+- Write only one paragraph.
+- Do not repeat the same phrase.
+- Do not copy raw logs.
+- Do not include field labels.
+- Do not include [INFO] lines.
+- Do not include separator lines.
+- If failure type is MAVEN_NOT_AVAILABLE, say it is an environment setup issue, not a confirmed code failure.
 """
 
 
@@ -257,16 +260,21 @@ def call_llm(prompt: str):
 
     outputs = active_model.generate(
         **inputs,
-        max_new_tokens=160,
+        max_new_tokens=140,
         do_sample=False,
-        num_beams=2
+        num_beams=2,
+        no_repeat_ngram_size=3
     )
 
     return active_tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 
+def has_repeated_phrase(text: str, phrase: str, max_count: int = 1):
+    return text.lower().count(phrase.lower()) > max_count
+
+
 def clean_llm_output(text: str):
-    cleaned = text.strip()
+    cleaned = " ".join(text.strip().split())
 
     bad_patterns = [
         "[INFO]",
@@ -274,7 +282,21 @@ def clean_llm_output(text: str):
         "=====",
         "org.springframework",
         "junitplatform",
-        "DemoApplicationTests"
+        "DemoApplicationTests",
+        "Project type:",
+        "Command:",
+        "Build status:",
+        "Exit code:",
+        "Execution success:",
+        "Test result:",
+        "Failure type:",
+        "Help message:",
+        "Warnings:",
+        "QA summary:",
+        "Rewrite these QA facts",
+        "Write one short professional QA summary",
+        "Do not copy raw logs",
+        "Do not include"
     ]
 
     if not cleaned:
@@ -283,7 +305,19 @@ def clean_llm_output(text: str):
     if any(pattern.lower() in cleaned.lower() for pattern in bad_patterns):
         return None
 
-    if len(cleaned) < 25:
+    if has_repeated_phrase(cleaned, "Tests run:", 1):
+        return None
+
+    if has_repeated_phrase(cleaned, "Failures:", 1):
+        return None
+
+    if has_repeated_phrase(cleaned, "Errors:", 1):
+        return None
+
+    if len(cleaned) < 40:
+        return None
+
+    if len(cleaned) > 700:
         return None
 
     return cleaned
