@@ -19,6 +19,8 @@ class LogAnalysisRequest(BaseModel):
     exit_code: int | None
     stdout: str
     stderr: str
+    failure_type: str | None = None
+    help_message: str | None = None
 
 
 @app.get("/")
@@ -62,6 +64,43 @@ def extract_test_result(logs: str):
     )
 
 
+def get_environment_issue(request: LogAnalysisRequest):
+    if request.failure_type == "MAVEN_NOT_AVAILABLE":
+        return {
+            "root_cause": "Maven is not installed or not available in PATH.",
+            "recommendation": "Install Apache Maven and add it to PATH, or add Maven Wrapper files to this project.",
+            "summary": (
+                f"The {request.project_type} project could not run `{request.command}` because Maven is not available "
+                "in the current system environment. This is an environment setup issue, not a confirmed project code failure."
+            ),
+            "issue": "Maven command is not available in PATH."
+        }
+
+    if request.failure_type == "MAVEN_WRAPPER_NOT_AVAILABLE":
+        return {
+            "root_cause": "Maven Wrapper command is missing or cannot be executed.",
+            "recommendation": "Check that mvnw.cmd exists in the project root or use a valid Maven installation.",
+            "summary": (
+                f"The {request.project_type} project could not run `{request.command}` because the Maven Wrapper "
+                "command was not available. This should be fixed before judging project test results."
+            ),
+            "issue": "Maven Wrapper command is not available."
+        }
+
+    if request.failure_type == "COMMAND_TIMEOUT":
+        return {
+            "root_cause": "The execution command timed out.",
+            "recommendation": "Increase the timeout or check whether the Maven build is stuck.",
+            "summary": (
+                f"The {request.project_type} project execution did not finish within the allowed time while running "
+                f"`{request.command}`."
+            ),
+            "issue": "Command execution timed out."
+        }
+
+    return None
+
+
 def extract_facts(request: LogAnalysisRequest):
     combined_logs = f"{request.stdout}\n{request.stderr}"
     lower_logs = combined_logs.lower()
@@ -83,6 +122,8 @@ def extract_facts(request: LogAnalysisRequest):
     if not warning_items:
         warning_items.append("No important warning was detected.")
 
+    environment_issue = get_environment_issue(request)
+
     return {
         "project_type": request.project_type,
         "command": request.command,
@@ -90,7 +131,10 @@ def extract_facts(request: LogAnalysisRequest):
         "success": request.success,
         "build_status": build_status,
         "test_result": test_result,
-        "warnings": warning_items
+        "warnings": warning_items,
+        "failure_type": request.failure_type,
+        "help_message": request.help_message,
+        "environment_issue": environment_issue
     }
 
 
@@ -100,6 +144,10 @@ def rule_based_analysis(request: LogAnalysisRequest):
     final_status = "PASS" if request.success else "FAIL"
 
     combined_logs = f"{request.stdout}\n{request.stderr}".lower()
+    environment_issue = get_environment_issue(request)
+
+    if environment_issue:
+        issues.append(environment_issue["issue"])
 
     if "build success" in combined_logs:
         issues.append("Build completed successfully.")
@@ -118,8 +166,20 @@ def rule_based_analysis(request: LogAnalysisRequest):
             "Mockito dynamic agent warning detected. This is not a test failure, but it may require configuration updates for future JDK versions."
         )
 
-    if request.exit_code not in (0, None):
+    if request.exit_code not in (0, None) and not environment_issue:
         issues.append(f"Process exited with non-zero exit code: {request.exit_code}")
+
+    if environment_issue:
+        return {
+            "agent": "log-agent",
+            "mode": "rule-based",
+            "final_status": final_status,
+            "summary": environment_issue["summary"],
+            "issues": issues,
+            "warnings": warnings,
+            "root_cause": environment_issue["root_cause"],
+            "recommendation": environment_issue["recommendation"]
+        }
 
     return {
         "agent": "log-agent",
@@ -134,6 +194,11 @@ def rule_based_analysis(request: LogAnalysisRequest):
 
 
 def build_clean_summary(facts, fallback_result):
+    environment_issue = facts.get("environment_issue")
+
+    if environment_issue:
+        return environment_issue["summary"]
+
     warning_text = " ".join(facts["warnings"])
 
     if facts["success"]:
@@ -156,6 +221,8 @@ def build_clean_summary(facts, fallback_result):
 
 def build_prompt(facts):
     warnings_text = " ".join(facts["warnings"])
+    failure_type = facts.get("failure_type") or "None"
+    help_message = facts.get("help_message") or "None"
 
     return f"""
 Rewrite these QA facts into a short professional QA summary.
@@ -166,8 +233,11 @@ Build status: {facts["build_status"]}
 Exit code: {facts["exit_code"]}
 Execution success: {facts["success"]}
 Test result: {facts["test_result"]}
+Failure type: {failure_type}
+Help message: {help_message}
 Warnings: {warnings_text}
 
+If failure type is MAVEN_NOT_AVAILABLE, clearly say this is an environment setup issue, not a confirmed code failure.
 Do not copy raw logs.
 Do not include [INFO] lines.
 Do not include separator lines.
@@ -224,6 +294,7 @@ def analyze_logs(request: LogAnalysisRequest):
     fallback_result = rule_based_analysis(request)
     facts = extract_facts(request)
     clean_summary = build_clean_summary(facts, fallback_result)
+    environment_issue = facts.get("environment_issue")
 
     try:
         prompt = build_prompt(facts)
@@ -232,6 +303,9 @@ def analyze_logs(request: LogAnalysisRequest):
 
         final_summary = cleaned_llm_text if cleaned_llm_text else clean_summary
 
+        if environment_issue:
+            final_summary = clean_summary
+
         return {
             "agent": "log-agent",
             "mode": "llm",
@@ -239,8 +313,8 @@ def analyze_logs(request: LogAnalysisRequest):
             "summary": final_summary,
             "issues": fallback_result["issues"],
             "warnings": fallback_result["warnings"],
-            "root_cause": "No blocking runtime error detected." if request.success else "Execution failed. Review logs and stack traces.",
-            "recommendation": "Project passed current test execution. Review warnings for future compatibility." if request.success else "Fix the detected failure and rerun Stitch QA."
+            "root_cause": environment_issue["root_cause"] if environment_issue else ("No blocking runtime error detected." if request.success else "Execution failed. Review logs and stack traces."),
+            "recommendation": environment_issue["recommendation"] if environment_issue else ("Project passed current test execution. Review warnings for future compatibility." if request.success else "Fix the detected failure and rerun Stitch QA.")
         }
 
     except Exception as error:

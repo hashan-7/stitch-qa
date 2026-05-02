@@ -2,15 +2,84 @@ import subprocess
 from pathlib import Path
 
 
+def classify_execution_failure(stderr_text):
+    stderr_lower = (stderr_text or "").lower()
+
+    if (
+        "mvn" in stderr_lower
+        and "not recognized" in stderr_lower
+    ):
+        return {
+            "failure_type": "MAVEN_NOT_AVAILABLE",
+            "help_message": (
+                "Maven is not installed or not available in PATH. "
+                "Install Apache Maven and add it to PATH, or add Maven Wrapper files "
+                "(mvnw, mvnw.cmd, .mvn/wrapper) to this project."
+            ),
+        }
+
+    if (
+        "mvnw.cmd" in stderr_lower
+        and "not recognized" in stderr_lower
+    ):
+        return {
+            "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
+            "help_message": (
+                "Maven Wrapper command was selected, but mvnw.cmd was not found or could not run. "
+                "Check that mvnw.cmd exists in the project root."
+            ),
+        }
+
+    if "command timed out" in stderr_lower:
+        return {
+            "failure_type": "COMMAND_TIMEOUT",
+            "help_message": (
+                "The command took too long to finish. Increase the timeout or check whether the build is stuck."
+            ),
+        }
+
+    return {
+        "failure_type": None,
+        "help_message": None,
+    }
+
+
+def build_stderr_with_help(stderr_text, failure_info):
+    help_message = failure_info.get("help_message")
+
+    if not help_message:
+        return stderr_text
+
+    if stderr_text:
+        return f"{stderr_text}\n\nStitch QA Help: {help_message}"
+
+    return f"Stitch QA Help: {help_message}"
+
+
+def build_result(success, exit_code, stdout, stderr, command):
+    failure_info = classify_execution_failure(stderr)
+    enhanced_stderr = build_stderr_with_help(stderr, failure_info)
+
+    return {
+        "success": success,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": enhanced_stderr,
+        "command": command,
+        "failure_type": failure_info.get("failure_type"),
+        "help_message": failure_info.get("help_message"),
+    }
+
+
 def execute_command(project_path, command, timeout_seconds=120):
     if not command:
-        return {
-            "success": False,
-            "exit_code": None,
-            "stdout": "",
-            "stderr": "No command provided for execution.",
-            "command": command,
-        }
+        return build_result(
+            success=False,
+            exit_code=None,
+            stdout="",
+            stderr="No command provided for execution.",
+            command=command,
+        )
 
     working_dir = Path(project_path).resolve()
 
@@ -24,28 +93,28 @@ def execute_command(project_path, command, timeout_seconds=120):
             timeout=timeout_seconds,
         )
 
-        return {
-            "success": completed_process.returncode == 0,
-            "exit_code": completed_process.returncode,
-            "stdout": completed_process.stdout,
-            "stderr": completed_process.stderr,
-            "command": command,
-        }
+        return build_result(
+            success=completed_process.returncode == 0,
+            exit_code=completed_process.returncode,
+            stdout=completed_process.stdout,
+            stderr=completed_process.stderr,
+            command=command,
+        )
 
     except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "exit_code": None,
-            "stdout": "",
-            "stderr": f"Command timed out after {timeout_seconds} seconds.",
-            "command": command,
-        }
+        return build_result(
+            success=False,
+            exit_code=None,
+            stdout="",
+            stderr=f"Command timed out after {timeout_seconds} seconds.",
+            command=command,
+        )
 
     except Exception as error:
-        return {
-            "success": False,
-            "exit_code": None,
-            "stdout": "",
-            "stderr": str(error),
-            "command": command,
-        }
+        return build_result(
+            success=False,
+            exit_code=None,
+            stdout="",
+            stderr=str(error),
+            command=command,
+        )
