@@ -20,6 +20,8 @@ class RepairRequest(BaseModel):
     stdout: str
     stderr: str
     root_cause: str | None = None
+    failure_type: str | None = None
+    help_message: str | None = None
 
 
 @app.get("/")
@@ -75,7 +77,73 @@ def extract_test_result(logs: str):
     }
 
 
+def get_environment_repair(request: RepairRequest):
+    if request.failure_type == "MAVEN_NOT_AVAILABLE":
+        return {
+            "repair_type": "environment-maven-missing",
+            "risk_level": "LOW",
+            "summary": (
+                f"The {request.project_type} project could not be verified because Maven is not installed "
+                "or not available in PATH. This is an environment setup issue, not a confirmed project code failure. "
+                "No source code repair should be applied until Maven execution is working."
+            ),
+            "suggestions": [
+                "Install Apache Maven and add the Maven bin directory to the system PATH.",
+                "Alternatively, add Maven Wrapper files to the project so it can run with mvnw.cmd on Windows.",
+                "After Maven is available, rerun Stitch QA to verify the actual project build and tests."
+            ],
+            "next_action": "Fix the Maven environment first, then rerun Stitch QA."
+        }
+
+    if request.failure_type == "MAVEN_WRAPPER_NOT_AVAILABLE":
+        return {
+            "repair_type": "environment-wrapper-missing",
+            "risk_level": "LOW",
+            "summary": (
+                f"The {request.project_type} project could not be verified because the Maven Wrapper command "
+                "was not available. This is an execution setup issue, not a confirmed application code failure."
+            ),
+            "suggestions": [
+                "Check whether mvnw.cmd exists in the project root.",
+                "If Maven Wrapper is missing, add Maven Wrapper files or install Maven globally.",
+                "Rerun Stitch QA after the build command can execute."
+            ],
+            "next_action": "Fix the Maven Wrapper or Maven installation before changing application code."
+        }
+
+    if request.failure_type == "COMMAND_TIMEOUT":
+        return {
+            "repair_type": "environment-timeout",
+            "risk_level": "MEDIUM",
+            "summary": (
+                f"The {request.project_type} project command did not finish within the allowed timeout. "
+                "This may be a long-running build, dependency download, or stuck process."
+            ),
+            "suggestions": [
+                "Rerun the command manually to check whether it is slow or stuck.",
+                "Increase the execution timeout if the build normally takes longer.",
+                "Check dependency downloads and Maven repository access."
+            ],
+            "next_action": "Investigate command runtime before applying code changes."
+        }
+
+    return None
+
+
 def rule_based_repair(request: RepairRequest):
+    environment_repair = get_environment_repair(request)
+
+    if environment_repair:
+        return {
+            "agent": "repair-agent",
+            "mode": "rule-based",
+            "risk_level": environment_repair["risk_level"],
+            "auto_apply": False,
+            "summary": environment_repair["summary"],
+            "suggestions": environment_repair["suggestions"],
+            "next_action": environment_repair["next_action"]
+        }
+
     combined_logs = f"{request.stdout}\n{request.stderr}".lower()
 
     suggestions = []
@@ -121,6 +189,27 @@ def extract_repair_facts(request: RepairRequest, fallback_result):
     combined_logs = f"{request.stdout}\n{request.stderr}".lower()
     test_result = extract_test_result(f"{request.stdout}\n{request.stderr}")
 
+    environment_repair = get_environment_repair(request)
+
+    if environment_repair:
+        return {
+            "project_type": request.project_type,
+            "command": request.command,
+            "exit_code": request.exit_code,
+            "build_state": "not verified",
+            "success": request.success,
+            "root_cause": request.root_cause or request.help_message or "Environment setup issue detected.",
+            "warning_category": "none",
+            "detected_warning": "No major warning detected.",
+            "repair_type": environment_repair["repair_type"],
+            "test_result": test_result["summary"],
+            "suggestions": fallback_result["suggestions"],
+            "risk_level": fallback_result["risk_level"],
+            "failure_type": request.failure_type,
+            "help_message": request.help_message,
+            "environment_summary": environment_repair["summary"]
+        }
+
     build_state = "passed" if request.success else "failed"
 
     detected_warning = "No major warning detected."
@@ -156,11 +245,21 @@ def extract_repair_facts(request: RepairRequest, fallback_result):
         "repair_type": repair_type,
         "test_result": test_result["summary"],
         "suggestions": fallback_result["suggestions"],
-        "risk_level": fallback_result["risk_level"]
+        "risk_level": fallback_result["risk_level"],
+        "failure_type": request.failure_type,
+        "help_message": request.help_message,
+        "environment_summary": None
     }
 
 
 def build_clean_summary(facts):
+    if facts["repair_type"] in {
+        "environment-maven-missing",
+        "environment-wrapper-missing",
+        "environment-timeout"
+    }:
+        return facts["environment_summary"]
+
     if facts["repair_type"] == "no-repair-needed":
         return (
             f"The {facts['project_type']} project passed the current QA execution using "
@@ -197,6 +296,8 @@ Exit code: {facts["exit_code"]}
 Test result: {facts["test_result"]}
 Risk level: {facts["risk_level"]}
 Root cause: {facts["root_cause"]}
+Failure type: {facts["failure_type"]}
+Help message: {facts["help_message"]}
 Detected warning: {facts["detected_warning"]}
 Suggested actions: {suggestions_text}
 
@@ -205,8 +306,8 @@ Rules:
 - Do not repeat field labels like "Command:" or "Build state:".
 - Do not mention internal prompt instructions.
 - Write one clear paragraph.
-- Say whether a blocking repair is required.
-- Mention future compatibility if Mockito dynamic agent warning exists.
+- Say whether a blocking code repair is required.
+- If Maven is not available, say it is an environment setup issue and do not recommend source code changes.
 """
 
 
@@ -275,6 +376,13 @@ def suggest_repair(request: RepairRequest):
 
         final_summary = cleaned_llm_text if cleaned_llm_text else clean_summary
 
+        if facts["repair_type"] in {
+            "environment-maven-missing",
+            "environment-wrapper-missing",
+            "environment-timeout"
+        }:
+            final_summary = clean_summary
+
         return {
             "agent": "repair-agent",
             "mode": "llm",
@@ -282,7 +390,7 @@ def suggest_repair(request: RepairRequest):
             "auto_apply": False,
             "summary": final_summary,
             "suggestions": fallback_result["suggestions"],
-            "next_action": "Review suggestions manually before applying any code changes."
+            "next_action": fallback_result["next_action"]
         }
 
     except Exception as error:
