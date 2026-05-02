@@ -1,7 +1,10 @@
+from pathlib import Path
 import requests
 
 
 DEFAULT_AGENT_TIMEOUT_SECONDS = 120
+MAX_CODE_SNIPPET_CHARS = 8000
+MAX_ERROR_LOG_CHARS = 12000
 
 
 def get_failure_context(execution_result):
@@ -19,6 +22,44 @@ def get_root_cause(agent_data, execution_result):
         return execution_result.get("help_message")
 
     return None
+
+
+def read_project_file(project_path, relative_file_path):
+    if not relative_file_path:
+        return None
+
+    try:
+        absolute_path = Path(project_path).resolve() / relative_file_path
+
+        if not absolute_path.exists() or not absolute_path.is_file():
+            return None
+
+        content = absolute_path.read_text(encoding="utf-8", errors="ignore")
+
+        if len(content) > MAX_CODE_SNIPPET_CHARS:
+            return content[-MAX_CODE_SNIPPET_CHARS:]
+
+        return content
+
+    except Exception:
+        return None
+
+
+def build_error_log(execution_result):
+    stdout = execution_result.get("stdout") or ""
+    stderr = execution_result.get("stderr") or ""
+
+    combined_log = (
+        "STDOUT:\n"
+        f"{stdout}\n\n"
+        "STDERR:\n"
+        f"{stderr}"
+    )
+
+    if len(combined_log) > MAX_ERROR_LOG_CHARS:
+        return combined_log[-MAX_ERROR_LOG_CHARS:]
+
+    return combined_log
 
 
 def analyze_logs_with_agent(agent_url, scan_result, execution_result):
@@ -96,6 +137,9 @@ def suggest_code_fix_with_agent(code_agent_url, scan_result, execution_result, a
     static_map = scan_result.get("static_map", {})
     failure_context = get_failure_context(execution_result)
 
+    main_file = static_map.get("main_file")
+    code_snippet = read_project_file(scan_result["project_path"], main_file)
+
     root_cause = get_root_cause(agent_data, execution_result)
 
     if not root_cause and failure_context["help_message"]:
@@ -108,13 +152,15 @@ def suggest_code_fix_with_agent(code_agent_url, scan_result, execution_result, a
 
     payload = {
         "project_type": scan_result["project_type"],
-        "file_path": static_map.get("main_file"),
-        "code_snippet": None,
-        "error_log": execution_result["stderr"],
+        "file_path": main_file,
+        "code_snippet": code_snippet,
+        "error_log": build_error_log(execution_result),
         "root_cause": root_cause,
         "repair_summary": repair_summary,
         "failure_type": failure_context["failure_type"],
         "help_message": failure_context["help_message"],
+        "success": execution_result["success"],
+        "exit_code": execution_result["exit_code"],
     }
 
     try:

@@ -98,6 +98,121 @@ def is_successful_execution(request: CodeRepairRequest):
     return False
 
 
+def extract_compile_error_details(request: CodeRepairRequest):
+    logs = request.error_log or ""
+
+    if "cannot find symbol" not in logs.lower():
+        return None
+
+    file_match = re.search(
+        r"([A-Za-z]:[/\\].*?\.java):\[(\d+),(\d+)\]",
+        logs
+    )
+
+    symbol_match = re.search(
+        r"symbol:\s+class\s+([A-Za-z_][A-Za-z0-9_]*)",
+        logs,
+        re.IGNORECASE
+    )
+
+    location_match = re.search(
+        r"location:\s+class\s+([A-Za-z0-9_.$]+)",
+        logs,
+        re.IGNORECASE
+    )
+
+    missing_symbol = symbol_match.group(1) if symbol_match else None
+    location_class = location_match.group(1) if location_match else None
+
+    line_number = file_match.group(2) if file_match else None
+    column_number = file_match.group(3) if file_match else None
+    file_path = file_match.group(1) if file_match else request.file_path
+
+    return {
+        "error_type": "cannot-find-symbol",
+        "file_path": file_path,
+        "line_number": line_number,
+        "column_number": column_number,
+        "missing_symbol": missing_symbol,
+        "location_class": location_class,
+    }
+
+
+def get_compile_error_guidance(request: CodeRepairRequest):
+    details = extract_compile_error_details(request)
+
+    if not details:
+        return None
+
+    code = request.code_snippet or ""
+    missing_symbol = details.get("missing_symbol")
+    location_class = details.get("location_class") or ""
+    short_location_class = location_class.split(".")[-1] if location_class else None
+
+    if (
+        missing_symbol
+        and short_location_class
+        and missing_symbol in code
+        and f"{missing_symbol}.class" in code
+        and f"{short_location_class}.class" not in code
+    ):
+        summary = (
+            f"Problem: The Maven compile step failed because `{missing_symbol}` cannot be found. "
+            f"In `{request.file_path}`, the code references `{missing_symbol}.class`, but the current application class is `{short_location_class}`.\n\n"
+            f"Safe fix approach: Replace the incorrect class reference with the existing application class. This is a targeted compile fix for the detected line.\n\n"
+            f"Suggested code change: Change `SpringApplication.run({missing_symbol}.class, args);` to "
+            f"`SpringApplication.run({short_location_class}.class, args);`.\n\n"
+            "Verification step: Rerun `mvnw.cmd test` or Stitch QA and confirm the compilation error is gone."
+        )
+
+        return {
+            "agent": "code-agent",
+            "mode": "rule-based",
+            "summary": summary,
+            "risk_level": "MEDIUM",
+            "auto_apply": False,
+            "suggested_patch": (
+                f"Replace `{missing_symbol}.class` with `{short_location_class}.class` in `{request.file_path}`."
+            ),
+            "verification": "Rerun Stitch QA and confirm the Maven compile phase succeeds."
+        }
+
+    if missing_symbol:
+        summary = (
+            f"Problem: The Maven compile step failed because the symbol `{missing_symbol}` could not be found.\n\n"
+            "Safe fix approach: Check whether the symbol name is misspelled, whether the class exists, or whether the required import/dependency is missing.\n\n"
+            f"Suggested code change: Fix the reference to `{missing_symbol}` by using the correct existing class name, adding the missing import, or adding the required dependency.\n\n"
+            "Verification step: Rerun the Maven test command and confirm the compile error is resolved."
+        )
+
+        return {
+            "agent": "code-agent",
+            "mode": "rule-based",
+            "summary": summary,
+            "risk_level": "MEDIUM",
+            "auto_apply": False,
+            "suggested_patch": None,
+            "verification": "Rerun Stitch QA after applying the targeted compile fix."
+        }
+
+    summary = (
+        "Problem: The Maven compile step failed with a cannot-find-symbol error.\n\n"
+        "Safe fix approach: Inspect the compiler error location, identify the missing class, method, or variable, and apply the smallest targeted fix.\n\n"
+        "Suggested code change: Correct the missing or invalid symbol reference in the affected Java file.\n\n"
+        "Verification step: Rerun the Maven test command and confirm compilation succeeds."
+    )
+
+    return {
+        "agent": "code-agent",
+        "mode": "rule-based",
+        "summary": summary,
+        "risk_level": "MEDIUM",
+        "auto_apply": False,
+        "suggested_patch": None,
+        "verification": "Rerun Stitch QA after fixing the cannot-find-symbol error."
+    }
+
+
 def get_successful_execution_guidance(request: CodeRepairRequest):
     if not is_successful_execution(request):
         return None
@@ -254,6 +369,7 @@ Return only these sections:
 If execution success is true or exit code is 0, do not say the project failed.
 If tests passed and only warnings exist, say no blocking application source code change is required.
 If the failure is Maven not available or Maven Wrapper missing, clearly say no application source code change is required.
+If the error says cannot find symbol, identify the missing symbol and suggest the smallest targeted fix.
 Do not include system/user/assistant labels.
 Do not repeat the prompt.
 Do not invent files that are not shown.
@@ -314,6 +430,11 @@ def fallback_code_guidance(request: CodeRepairRequest):
 
     if successful_guidance:
         return successful_guidance
+
+    compile_error_guidance = get_compile_error_guidance(request)
+
+    if compile_error_guidance:
+        return compile_error_guidance
 
     if request.error_log:
         summary = (
@@ -428,6 +549,11 @@ def suggest_code_fix(request: CodeRepairRequest):
 
     if successful_guidance:
         return successful_guidance
+
+    compile_error_guidance = get_compile_error_guidance(request)
+
+    if compile_error_guidance:
+        return compile_error_guidance
 
     fallback_result = fallback_code_guidance(request)
 
