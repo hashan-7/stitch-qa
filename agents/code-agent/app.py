@@ -20,6 +20,8 @@ class CodeRepairRequest(BaseModel):
     error_log: str | None = None
     root_cause: str | None = None
     repair_summary: str | None = None
+    failure_type: str | None = None
+    help_message: str | None = None
 
 
 @app.get("/")
@@ -47,12 +49,77 @@ def load_model():
     return tokenizer, model
 
 
+def get_environment_guidance(request: CodeRepairRequest):
+    if request.failure_type == "MAVEN_NOT_AVAILABLE":
+        summary = (
+            "Problem: Maven is not installed or not available in PATH.\n\n"
+            "Safe fix approach: This is an environment setup issue, not an application source code issue. "
+            "Do not modify Java source files for this failure.\n\n"
+            "Suggested code change: No application code change is required. Install Apache Maven and add the Maven bin directory "
+            "to PATH, or add Maven Wrapper files (mvnw, mvnw.cmd, .mvn/wrapper) to the project.\n\n"
+            "Verification step: Run `mvn -v` or `mvnw.cmd test` after fixing the environment, then rerun Stitch QA."
+        )
+
+        return {
+            "agent": "code-agent",
+            "mode": "rule-based",
+            "summary": summary,
+            "risk_level": "LOW",
+            "auto_apply": False,
+            "suggested_patch": None,
+            "verification": "Fix the Maven environment first, then rerun Stitch QA verification."
+        }
+
+    if request.failure_type == "MAVEN_WRAPPER_NOT_AVAILABLE":
+        summary = (
+            "Problem: Maven Wrapper command is missing or cannot be executed.\n\n"
+            "Safe fix approach: This is a project execution setup issue, not a confirmed Java source code issue.\n\n"
+            "Suggested code change: No application source code change is required. Check whether mvnw.cmd exists in the project root, "
+            "or add Maven Wrapper files to the project.\n\n"
+            "Verification step: Run `mvnw.cmd test` from the project root after adding or fixing the wrapper."
+        )
+
+        return {
+            "agent": "code-agent",
+            "mode": "rule-based",
+            "summary": summary,
+            "risk_level": "LOW",
+            "auto_apply": False,
+            "suggested_patch": None,
+            "verification": "Fix Maven Wrapper availability first, then rerun Stitch QA verification."
+        }
+
+    if request.failure_type == "COMMAND_TIMEOUT":
+        summary = (
+            "Problem: The build or test command timed out.\n\n"
+            "Safe fix approach: Treat this as an execution/runtime environment issue first. "
+            "Do not modify source code until the command behavior is verified manually.\n\n"
+            "Suggested code change: No direct code change is recommended from this timeout alone. "
+            "Check whether dependency downloads, tests, or build steps are hanging.\n\n"
+            "Verification step: Rerun the Maven command manually with a longer timeout and inspect where it stalls."
+        )
+
+        return {
+            "agent": "code-agent",
+            "mode": "rule-based",
+            "summary": summary,
+            "risk_level": "MEDIUM",
+            "auto_apply": False,
+            "suggested_patch": None,
+            "verification": "Investigate command timeout first, then rerun Stitch QA."
+        }
+
+    return None
+
+
 def build_prompt(request: CodeRepairRequest):
     code = request.code_snippet or "No code snippet provided."
     error = request.error_log or "No error log provided."
     root_cause = request.root_cause or "No root cause provided."
     repair_summary = request.repair_summary or "No repair summary provided."
     file_path = request.file_path or "Unknown file"
+    failure_type = request.failure_type or "None"
+    help_message = request.help_message or "None"
 
     return f"""
 Analyze the following code repair context and provide safe code-level guidance.
@@ -62,6 +129,12 @@ Project type:
 
 File path:
 {file_path}
+
+Failure type:
+{failure_type}
+
+Help message:
+{help_message}
 
 Root cause:
 {root_cause}
@@ -81,6 +154,7 @@ Return only these sections:
 3. Suggested code change
 4. Verification step
 
+If the failure is Maven not available or Maven Wrapper missing, clearly say no application source code change is required.
 Do not include system/user/assistant labels.
 Do not repeat the prompt.
 Do not invent files that are not shown.
@@ -132,6 +206,11 @@ def call_llm(prompt: str):
 
 
 def fallback_code_guidance(request: CodeRepairRequest):
+    environment_guidance = get_environment_guidance(request)
+
+    if environment_guidance:
+        return environment_guidance
+
     if request.error_log:
         summary = (
             "A code-level issue may exist based on the provided error log. "
@@ -163,7 +242,9 @@ def remove_prompt_leak(text: str):
         r"assistant\s*1\.",
         r"assistant\s*Problem",
         r"###\s*1\.\s*Problem",
-        r"1\.\s*Problem"
+        r"1\.\s*Problem",
+        r"\*\*Problem:\*\*",
+        r"Problem:"
     ]
 
     for pattern in marker_patterns:
@@ -178,7 +259,8 @@ def remove_prompt_leak(text: str):
     bad_prefixes = [
         "system You are",
         "user You are",
-        "Analyze the following code repair context"
+        "Analyze the following code repair context",
+        "Return only these sections"
     ]
 
     for prefix in bad_prefixes:
@@ -203,7 +285,17 @@ def clean_output(text: str):
     if len(cleaned) < 30:
         return None
 
-    if "system You are" in cleaned or "user You are" in cleaned:
+    bad_patterns = [
+        "system You are",
+        "user You are",
+        "Do not include system/user/assistant labels",
+        "Do not repeat the prompt",
+        "Do not invent files that are not shown",
+        "Do not apply changes automatically",
+        "Keep the answer concise"
+    ]
+
+    if any(pattern.lower() in cleaned.lower() for pattern in bad_patterns):
         return None
 
     return cleaned
@@ -211,6 +303,11 @@ def clean_output(text: str):
 
 @app.post("/suggest-code-fix")
 def suggest_code_fix(request: CodeRepairRequest):
+    environment_guidance = get_environment_guidance(request)
+
+    if environment_guidance:
+        return environment_guidance
+
     fallback_result = fallback_code_guidance(request)
 
     try:
@@ -234,4 +331,3 @@ def suggest_code_fix(request: CodeRepairRequest):
     except Exception as error:
         fallback_result["llm_error"] = repr(error)
         return fallback_result
-    
