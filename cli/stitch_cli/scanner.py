@@ -70,6 +70,9 @@ def create_static_map(project_path, files, project_type):
         "test_source_dir": None,
         "main_file": None,
         "suggested_command": None,
+        "has_maven_wrapper": False,
+        "wrapper_command": None,
+        "wrapper_recommendation": None,
     }
 
     normalized_files = [file.replace("\\", "/") for file in files]
@@ -91,12 +94,32 @@ def create_static_map(project_path, files, project_type):
         static_map["suggested_command"] = "mvn test"
 
         if "mvnw.cmd" in file_set:
+            static_map["has_maven_wrapper"] = True
+            static_map["wrapper_command"] = ".\\mvnw.cmd test"
             static_map["suggested_command"] = ".\\mvnw.cmd test"
 
-        if "mvnw" in file_set and "mvnw.cmd" not in file_set:
+        elif "mvnw" in file_set:
+            static_map["has_maven_wrapper"] = True
+            static_map["wrapper_command"] = "./mvnw test"
             static_map["suggested_command"] = "./mvnw test"
 
+        else:
+            static_map["wrapper_recommendation"] = (
+                "This Maven project does not include Maven Wrapper files. "
+                "For portable execution, add Maven Wrapper files such as mvnw, mvnw.cmd, "
+                "and .mvn/wrapper so the project can run without requiring a global Maven installation."
+            )
+
     return static_map
+
+
+def build_project_recommendations(project_type, static_map):
+    recommendations = []
+
+    if project_type == "Java Maven Project" and static_map.get("wrapper_recommendation"):
+        recommendations.append(static_map["wrapper_recommendation"])
+
+    return recommendations
 
 
 def scan_project(path):
@@ -132,6 +155,7 @@ def scan_project(path):
 
     project_type = detect_project_type(files)
     static_map = create_static_map(project_path, files, project_type)
+    project_recommendations = build_project_recommendations(project_type, static_map)
 
     return {
         "project_path": str(project_path),
@@ -142,4 +166,5 @@ def scan_project(path):
         "files": files,
         "extension_counts": dict(extension_counts),
         "static_map": static_map,
+        "project_recommendations": project_recommendations,
     }

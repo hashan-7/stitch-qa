@@ -38,6 +38,7 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
     json_report_path = project_path / "STITCH_QA_REPORT.json"
 
     static_map = scan_result["static_map"]
+    project_recommendations = scan_result.get("project_recommendations", [])
 
     final_status = build_status_label(execution_result, agent_data)
 
@@ -60,11 +61,17 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
             "test_source_dir": static_map.get("test_source_dir"),
             "main_file": static_map.get("main_file"),
             "suggested_command": static_map.get("suggested_command"),
+            "has_maven_wrapper": static_map.get("has_maven_wrapper"),
+            "wrapper_command": static_map.get("wrapper_command"),
+            "wrapper_recommendation": static_map.get("wrapper_recommendation"),
         },
+        "project_recommendations": format_list(project_recommendations),
         "execution": {
             "command": execution_result["command"],
             "success": execution_result["success"],
             "exit_code": execution_result["exit_code"],
+            "failure_type": execution_result.get("failure_type"),
+            "help_message": execution_result.get("help_message"),
         },
         "log_agent": {
             "agent": safe_value(agent_data.get("agent") if agent_data else None),
@@ -113,6 +120,7 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
     log_issues = format_markdown_list(agent_data.get("issues") if agent_data else [])
     log_warnings = format_markdown_list(agent_data.get("warnings") if agent_data else [])
     repair_suggestions = format_markdown_list(repair_data.get("suggestions") if repair_data else [])
+    project_recommendations_text = format_markdown_list(project_recommendations)
 
     code_section = ""
 
@@ -165,12 +173,19 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
         f"- Main Source Directory: {safe_value(static_map.get('main_source_dir'), 'Not available')}\n"
         f"- Test Source Directory: {safe_value(static_map.get('test_source_dir'), 'Not available')}\n"
         f"- Main File: {safe_value(static_map.get('main_file'), 'Not available')}\n"
-        f"- Suggested Command: {safe_value(static_map.get('suggested_command'), 'Not available')}\n\n"
+        f"- Suggested Command: {safe_value(static_map.get('suggested_command'), 'Not available')}\n"
+        f"- Maven Wrapper: {safe_value(static_map.get('has_maven_wrapper'), False)}\n"
+        f"- Wrapper Command: {safe_value(static_map.get('wrapper_command'), 'Not available')}\n\n"
+
+        "## Project Recommendations\n\n"
+        f"{project_recommendations_text}\n\n"
 
         "## Execution Result\n\n"
         f"- Command: `{execution_result['command']}`\n"
         f"- Success: {execution_result['success']}\n"
-        f"- Exit Code: {execution_result['exit_code']}\n\n"
+        f"- Exit Code: {execution_result['exit_code']}\n"
+        f"- Failure Type: {safe_value(execution_result.get('failure_type'), 'None')}\n"
+        f"- Help Message: {safe_value(execution_result.get('help_message'), 'None')}\n\n"
 
         "## AI Log Analysis\n\n"
         f"- Agent: {safe_value(agent_data.get('agent') if agent_data else None, 'Not available')}\n"

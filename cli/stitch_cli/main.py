@@ -72,6 +72,11 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
     console.print(f"[bold]Main File:[/bold] {static_map['main_file']}")
     console.print(f"[bold]Suggested Command:[/bold] {static_map['suggested_command']}")
 
+    if result.get("project_recommendations"):
+        console.print("\n[bold yellow]Project Recommendations[/bold yellow]")
+        for recommendation in result["project_recommendations"]:
+            console.print(f"- {recommendation}")
+
     console.print("\n[bold cyan]Detected Files[/bold cyan]")
     for file in result["files"][:20]:
         console.print(f"- {file}")
@@ -208,4 +213,4 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         )
         console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
 
-    console.print("\n[bold yellow]Next:[/bold yellow] Analyze-code CLI will be tested next.")
+    console.print("\n[bold green]Stitch QA scan completed.[/bold green] Review the generated report for details.")
