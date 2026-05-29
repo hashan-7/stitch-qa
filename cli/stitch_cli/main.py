@@ -1,3 +1,4 @@
+import sys
 import click
 from rich.console import Console
 from stitch_cli.scanner import scan_project
@@ -11,6 +12,14 @@ from stitch_cli.agent_client import (
 from stitch_cli.code_cli import run_analyze_code
 
 console = Console()
+
+
+def is_failed_status(status):
+    if not status:
+        return False
+
+    normalized_status = str(status).strip().upper()
+    return normalized_status in {"FAIL", "FAILED", "ERROR"}
 
 
 @click.group()
@@ -46,11 +55,13 @@ def analyze_code(code_agent_url):
     default="https://hashan-7-stitch-qa-code-agent.hf.space",
 )
 def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code_agent_url):
+    exit_code = 0
+
     try:
         result = scan_project(path)
     except Exception as error:
         console.print(f"[bold red]Scan failed:[/bold red] {error}")
-        return
+        sys.exit(1)
 
     console.print("\n[bold green]Stitch QA Scan Started[/bold green]")
     console.print(f"[bold]Project Path:[/bold] {result['project_path']}")
@@ -87,7 +98,7 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
     if (analyze or repair or code_fix) and not run:
         console.print("\n[bold red]Analyze/repair/code-fix requires --run.[/bold red]")
         console.print("Use: stitch scan demo --run --analyze --repair --code-fix")
-        return
+        sys.exit(1)
 
     if code_fix and not repair:
         console.print("\n[bold yellow]Warning:[/bold yellow] --code-fix works best with --repair.")
@@ -115,6 +126,9 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         console.print("\n[bold red]STDERR[/bold red]")
         console.print(execution_result["stderr"][-3000:] or "No stderr output.")
 
+        if not execution_result.get("success"):
+            exit_code = 1
+
         if analyze:
             console.print("\n[bold magenta]Log Agent Analysis Started[/bold magenta]")
 
@@ -133,6 +147,9 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
                 console.print(f"[bold]Summary:[/bold] {agent_data.get('summary')}")
                 console.print(f"[bold]Root Cause:[/bold] {agent_data.get('root_cause')}")
                 console.print(f"[bold]Recommendation:[/bold] {agent_data.get('recommendation')}")
+
+                if is_failed_status(agent_data.get("final_status")):
+                    exit_code = 1
 
                 if agent_data.get("llm_error"):
                     console.print("\n[bold red]LLM Error[/bold red]")
@@ -214,3 +231,6 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
 
     console.print("\n[bold green]Stitch QA scan completed.[/bold green] Review the generated report for details.")
+
+    if exit_code != 0:
+        sys.exit(exit_code)
