@@ -2,8 +2,11 @@ import subprocess
 from pathlib import Path
 
 
-def classify_execution_failure(stderr_text):
+def classify_execution_failure(stderr_text, stdout_text=None, command=None):
     stderr_lower = (stderr_text or "").lower()
+    stdout_lower = (stdout_text or "").lower()
+    output_lower = f"{stdout_lower}\n{stderr_lower}"
+    command_lower = (command or "").lower()
 
     if (
         "mvn" in stderr_lower
@@ -30,7 +33,57 @@ def classify_execution_failure(stderr_text):
             ),
         }
 
-    if "command timed out" in stderr_lower:
+    if (
+        "python" in command_lower
+        and (
+            "python was not found" in output_lower
+            or "python is not recognized" in output_lower
+            or "python' is not recognized" in output_lower
+            or "no python at" in output_lower
+        )
+    ):
+        return {
+            "failure_type": "PYTHON_NOT_AVAILABLE",
+            "help_message": (
+                "Python is not installed or not available in PATH. "
+                "Install Python and add it to PATH, then rerun Stitch QA."
+            ),
+        }
+
+    if (
+        "pytest" in command_lower
+        and (
+            "no module named pytest" in output_lower
+            or "pytest: command not found" in output_lower
+            or "pytest is not recognized" in output_lower
+            or "pytest' is not recognized" in output_lower
+        )
+    ):
+        return {
+            "failure_type": "PYTEST_NOT_AVAILABLE",
+            "help_message": (
+                "pytest is not installed in the active Python environment. "
+                "Install pytest with `python -m pip install pytest`, or add it to the project dependencies."
+            ),
+        }
+
+    if (
+        "pytest" in command_lower
+        and (
+            "collected 0 items" in output_lower
+            or "no tests ran" in output_lower
+            or "no tests collected" in output_lower
+        )
+    ):
+        return {
+            "failure_type": "PYTHON_TESTS_NOT_FOUND",
+            "help_message": (
+                "pytest ran but did not find any tests. "
+                "Add Python tests in a tests folder or files named test_*.py."
+            ),
+        }
+
+    if "command timed out" in output_lower:
         return {
             "failure_type": "COMMAND_TIMEOUT",
             "help_message": (
@@ -57,7 +110,7 @@ def build_stderr_with_help(stderr_text, failure_info):
 
 
 def build_result(success, exit_code, stdout, stderr, command):
-    failure_info = classify_execution_failure(stderr)
+    failure_info = classify_execution_failure(stderr, stdout, command)
     enhanced_stderr = build_stderr_with_help(stderr, failure_info)
 
     return {
