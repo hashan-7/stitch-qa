@@ -55,10 +55,38 @@ def detect_project_type(files):
     if "package.json" in file_set:
         return "Node.js Project"
 
-    if "requirements.txt" in file_set or "pyproject.toml" in file_set:
+    if (
+        "pyproject.toml" in file_set
+        or "requirements.txt" in file_set
+        or "pytest.ini" in file_set
+        or "setup.py" in file_set
+    ):
         return "Python Project"
 
     return "Unknown Project"
+
+
+def find_python_main_file(files):
+    preferred_files = [
+        "app.py",
+        "main.py",
+        "manage.py",
+        "src/app.py",
+        "src/main.py",
+    ]
+
+    file_set = set(file.replace("\\", "/") for file in files)
+
+    for file in preferred_files:
+        if file in file_set:
+            return file
+
+    for file in files:
+        normalized_file = file.replace("\\", "/")
+        if normalized_file.endswith(".py") and not normalized_file.startswith("tests/"):
+            return file
+
+    return None
 
 
 def create_static_map(project_path, files, project_type):
@@ -110,6 +138,29 @@ def create_static_map(project_path, files, project_type):
                 "and .mvn/wrapper so the project can run without requiring a global Maven installation."
             )
 
+    if project_type == "Python Project":
+        if "pyproject.toml" in file_set:
+            static_map["build_file"] = "pyproject.toml"
+        elif "requirements.txt" in file_set:
+            static_map["build_file"] = "requirements.txt"
+        elif "setup.py" in file_set:
+            static_map["build_file"] = "setup.py"
+        elif "pytest.ini" in file_set:
+            static_map["build_file"] = "pytest.ini"
+
+        if any(file.startswith("src/") and file.endswith(".py") for file in normalized_files):
+            static_map["main_source_dir"] = "src"
+        elif any(file.endswith(".py") for file in normalized_files):
+            static_map["main_source_dir"] = "."
+
+        if any(file.startswith("tests/") and file.endswith(".py") for file in normalized_files):
+            static_map["test_source_dir"] = "tests"
+        elif any(Path(file).name.startswith("test_") and file.endswith(".py") for file in normalized_files):
+            static_map["test_source_dir"] = "."
+
+        static_map["main_file"] = find_python_main_file(files)
+        static_map["suggested_command"] = "python -m pytest"
+
     return static_map
 
 
@@ -118,6 +169,12 @@ def build_project_recommendations(project_type, static_map):
 
     if project_type == "Java Maven Project" and static_map.get("wrapper_recommendation"):
         recommendations.append(static_map["wrapper_recommendation"])
+
+    if project_type == "Python Project" and not static_map.get("test_source_dir"):
+        recommendations.append(
+            "No Python test directory or test files were detected. "
+            "Add pytest tests in a tests folder or files named test_*.py for better QA coverage."
+        )
 
     return recommendations
 
