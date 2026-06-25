@@ -4,7 +4,8 @@ from rich.prompt import Prompt
 
 console = Console()
 
-DEFAULT_CODE_AGENT_URL = "https://hashan-7-stitch-qa-code-agent.hf.space"
+
+DEFAULT_CODE_AGENT_URL = "https://hashan-77-stitch-qa-code-agent.hf.space"
 DEFAULT_TIMEOUT_SECONDS = 120
 
 

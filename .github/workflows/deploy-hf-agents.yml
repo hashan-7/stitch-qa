@@ -34,7 +34,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf upload hashan-7/stitch-qa-log-agent hf-log-agent . --repo-type=space --delete="*" --commit-message="Deploy log agent from GitHub Actions"
+          hf upload hashan-77/stitch-qa-log-agent hf-log-agent . --repo-type=space --delete="*" --commit-message="Deploy log agent from GitHub Actions"
 
   deploy-repair-agent:
     runs-on: ubuntu-latest
@@ -58,7 +58,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf upload hashan-7/stitch-qa-repair-agent hf-repair-agent . --repo-type=space --delete="*" --commit-message="Deploy repair agent from GitHub Actions"
+          hf upload hashan-77/stitch-qa-repair-agent hf-repair-agent . --repo-type=space --delete="*" --commit-message="Deploy repair agent from GitHub Actions"
 
   deploy-code-agent:
     runs-on: ubuntu-latest
@@ -82,4 +82,4 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf upload hashan-7/stitch-qa-code-agent hf-code-agent . --repo-type=space --delete="*" --commit-message="Deploy code agent from GitHub Actions"
+          hf upload hashan-77/stitch-qa-code-agent hf-code-agent . --repo-type=space --delete="*" --commit-message="Deploy code agent from GitHub Actions"
