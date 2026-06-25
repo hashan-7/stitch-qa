@@ -1,8 +1,8 @@
 ---
 title: Stitch QA Log Agent
 emoji: 🤖
-colorFrom: blue
-colorTo: green
+colorFrom: purple
+colorTo: blue
 sdk: docker
 app_port: 7860
 ---
