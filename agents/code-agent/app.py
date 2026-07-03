@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import os
 import torch
 import re
@@ -41,9 +41,13 @@ def load_model():
     global tokenizer, model
 
     if tokenizer is None or model is None:
+        config = AutoConfig.from_pretrained(HF_MODEL)
+        config.tie_word_embeddings = False
+
         tokenizer = AutoTokenizer.from_pretrained(HF_MODEL)
         model = AutoModelForCausalLM.from_pretrained(
             HF_MODEL,
+            config=config,
             torch_dtype=torch.float32,
             low_cpu_mem_usage=True
         )
@@ -370,6 +374,7 @@ If execution success is true or exit code is 0, do not say the project failed.
 If tests passed and only warnings exist, say no blocking application source code change is required.
 If the failure is Maven not available or Maven Wrapper missing, clearly say no application source code change is required.
 If the error says cannot find symbol, identify the missing symbol and suggest the smallest targeted fix.
+If the error is "No module named pytest", suggest installing pytest with `pip install pytest`. Do NOT suggest adding `import pytest` to source code.
 Do not include system/user/assistant labels.
 Do not repeat the prompt.
 Do not invent files that are not shown.
