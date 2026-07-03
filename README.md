@@ -246,4 +246,4 @@ MIT License. See `LICENSE` for details.
 - Click
 - Rich
 
-<div align="center">Developed with 💜 by <a href="https://github.com/hashan-7">hashan-7</a></div>
+<div align="center">Developed with 💜 by H7</a></div>
