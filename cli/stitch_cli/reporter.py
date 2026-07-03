@@ -73,19 +73,60 @@ def build_static_mapping_markdown(static_map):
 
 def generate_report(scan_result, execution_result, agent_data=None, repair_data=None, code_data=None):
     project_path = Path(scan_result["project_path"])
+    project_type = scan_result.get("project_type", "Unknown")
+    static_map = scan_result.get("static_map", {})
+    generated_at = str(datetime.now())
+
+    if execution_result is None:
+        coming_soon_message = static_map.get("coming_soon_message", "Support for this project type is planned for a future release.")
+
+        md_content = f"""# Stitch QA Report
+
+## Project Type Not Yet Supported
+
+**Detected Project Type:** {project_type}
+
+**Message:** {coming_soon_message}
+
+Stitch QA V2 currently supports:
+- **Java Maven** (pom.xml)
+- **Python** (requirements.txt / pyproject.toml)
+
+**Action Taken:** Execution was skipped. No tests were run, and no agents were called.
+**Exit Code:** 0 (Clean skip)
+
+Thank you for trying Stitch QA! 
+
+---
+Generated At: {generated_at}
+"""
+
+        json_content = {
+            "final_status": "SKIPPED",
+            "project_type": project_type,
+            "coming_soon_message": coming_soon_message,
+            "skip_reason": "Unsupported or unrecognized project type.",
+            "exit_code": 0,
+            "generated_at": generated_at
+        }
+
+        md_report_path = project_path / "STITCH_QA_REPORT.md"
+        json_report_path = project_path / "STITCH_QA_REPORT.json"
+
+        md_report_path.write_text(md_content, encoding="utf-8")
+        json_report_path.write_text(json.dumps(json_content, indent=2), encoding="utf-8")
+
+        return md_report_path
 
     md_report_path = project_path / "STITCH_QA_REPORT.md"
     json_report_path = project_path / "STITCH_QA_REPORT.json"
 
-    static_map = scan_result["static_map"]
     project_recommendations = scan_result.get("project_recommendations", [])
 
     final_status = build_status_label(execution_result, agent_data)
 
     stdout_text = execution_result["stdout"][-2000:] if execution_result["stdout"] else ""
     stderr_text = execution_result["stderr"][-2000:] if execution_result["stderr"] else ""
-
-    generated_at = str(datetime.now())
 
     json_content = {
         "project": {

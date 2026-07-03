@@ -27,6 +27,33 @@ IGNORED_FILES = {
     "STITCH_QA_REPORT.json",
 }
 
+UNSUPPORTED_KNOWN_PROJECTS = {
+    "Java Gradle Project": "Gradle support is planned for a future version.",
+    "Node.js Project": "Node.js / npm support is planned for a future version.",
+    "Angular Project": "Angular support is planned for a future version.",
+    "Next.js Project": "Next.js support is planned for a future version.",
+    "Nuxt.js Project": "Nuxt.js support is planned for a future version.",
+    "Vite Project": "Vite support is planned for a future version.",
+    "TypeScript Project": "TypeScript support is planned for a future version.",
+    "PHP Composer Project": "PHP (Composer) support is planned for a future version.",
+    "PHP Project": "PHP support is planned for a future version.",
+    "Laravel Project": "Laravel support is planned for a future version.",
+    "WordPress Project": "WordPress support is planned for a future version.",
+    "Ruby Project": "Ruby support is planned for a future version.",
+    "Go Project": "Go support is planned for a future version.",
+    "Rust Project": "Rust support is planned for a future version.",
+    "C# .NET Project": "C# / .NET support is planned for a future version.",
+    "Swift Project": "Swift support is planned for a future version.",
+    "Kotlin Project": "Kotlin support is planned for a future version.",
+    "C Project": "C support is planned for a future version.",
+    "C++ Project": "C++ support is planned for a future version.",
+    "Flutter / Dart Project": "Flutter / Dart support is planned for a future version.",
+    "Dart Project": "Dart support is planned for a future version.",
+    "Shell Script Project": "Shell script support is planned for a future version.",
+    "Bash Script Project": "Bash script support is planned for a future version.",
+    "CMake Project": "CMake support is planned for a future version.",
+}
+
 
 def should_ignore(relative_path):
     if relative_path.name in IGNORED_FILES:
@@ -52,16 +79,102 @@ def detect_project_type(files):
     if "build.gradle" in file_set or "build.gradle.kts" in file_set:
         return "Java Gradle Project"
 
-    if "package.json" in file_set:
-        return "Node.js Project"
-
     if (
         "pyproject.toml" in file_set
         or "requirements.txt" in file_set
         or "pytest.ini" in file_set
         or "setup.py" in file_set
+        or "manage.py" in file_set
+        or "app.py" in file_set
     ):
         return "Python Project"
+
+    if "package.json" in file_set:
+        if "angular.json" in file_set:
+            return "Angular Project"
+        if "next.config.js" in file_set or "next.config.ts" in file_set:
+            return "Next.js Project"
+        if "nuxt.config.js" in file_set or "nuxt.config.ts" in file_set:
+            return "Nuxt.js Project"
+        if "vite.config.js" in file_set or "vite.config.ts" in file_set:
+            return "Vite Project"
+        if "tsconfig.json" in file_set:
+            return "TypeScript Project"
+        if any(f.endswith(".ts") for f in files) or any(f.endswith(".tsx") for f in files):
+            return "TypeScript Project"
+        return "Node.js Project"
+
+    if "tsconfig.json" in file_set:
+        return "TypeScript Project"
+
+    if any(f.endswith(".ts") for f in files) or any(f.endswith(".tsx") for f in files):
+        return "TypeScript Project"
+
+    if "composer.json" in file_set:
+        return "PHP Composer Project"
+
+    if "wp-config.php" in file_set:
+        return "WordPress Project"
+
+    if "artisan" in file_set:
+        return "Laravel Project"
+
+    if any(f.endswith(".php") for f in files):
+        return "PHP Project"
+
+    if "Gemfile" in file_set or "Rakefile" in file_set:
+        return "Ruby Project"
+
+    if any(f.endswith(".rb") for f in files):
+        return "Ruby Project"
+
+    if "go.mod" in file_set or "go.sum" in file_set:
+        return "Go Project"
+
+    if any(f.endswith(".go") for f in files):
+        return "Go Project"
+
+    if "Cargo.toml" in file_set or "Cargo.lock" in file_set:
+        return "Rust Project"
+
+    if any(f.endswith(".rs") for f in files):
+        return "Rust Project"
+
+    if any(f.endswith(".csproj") for f in files) or any(f.endswith(".sln") for f in files):
+        return "C# .NET Project"
+
+    if any(f.endswith(".cs") for f in files):
+        return "C# .NET Project"
+
+    if "Package.swift" in file_set:
+        return "Swift Project"
+
+    if any(f.endswith(".swift") for f in files):
+        return "Swift Project"
+
+    if any(f.endswith(".kt") for f in files) or any(f.endswith(".kts") for f in files):
+        return "Kotlin Project"
+
+    if "CMakeLists.txt" in file_set:
+        return "CMake Project"
+
+    if any(f.endswith(".cpp") for f in files) or any(f.endswith(".cxx") for f in files):
+        return "C++ Project"
+
+    if any(f.endswith(".c") for f in files):
+        return "C Project"
+
+    if "pubspec.yaml" in file_set:
+        return "Flutter / Dart Project"
+
+    if any(f.endswith(".dart") for f in files):
+        return "Dart Project"
+
+    if any(f.endswith(".sh") for f in files):
+        return "Shell Script Project"
+
+    if any(f.endswith(".bash") for f in files):
+        return "Bash Script Project"
 
     return "Unknown Project"
 
@@ -101,6 +214,7 @@ def create_static_map(project_path, files, project_type):
         "has_maven_wrapper": False,
         "wrapper_command": None,
         "wrapper_recommendation": None,
+        "coming_soon_message": None,
     }
 
     normalized_files = [file.replace("\\", "/") for file in files]
@@ -138,7 +252,7 @@ def create_static_map(project_path, files, project_type):
                 "and .mvn/wrapper so the project can run without requiring a global Maven installation."
             )
 
-    if project_type == "Python Project":
+    elif project_type == "Python Project":
         if "pyproject.toml" in file_set:
             static_map["build_file"] = "pyproject.toml"
         elif "requirements.txt" in file_set:
@@ -156,10 +270,20 @@ def create_static_map(project_path, files, project_type):
         if any(file.startswith("tests/") and file.endswith(".py") for file in normalized_files):
             static_map["test_source_dir"] = "tests"
         elif any(Path(file).name.startswith("test_") and file.endswith(".py") for file in normalized_files):
-            static_map["test_source_dir"] = "."
+            static_map["test_source_dir"] = "tests"
 
         static_map["main_file"] = find_python_main_file(files)
         static_map["suggested_command"] = "python -m pytest"
+
+    else:
+        static_map["suggested_command"] = None
+        if project_type == "Unknown Project":
+            static_map["coming_soon_message"] = "This project type could not be automatically recognized."
+        else:
+            static_map["coming_soon_message"] = UNSUPPORTED_KNOWN_PROJECTS.get(
+                project_type,
+                "Support for this project type is planned for a future release."
+            )
 
     return static_map
 

@@ -109,6 +109,24 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         repair_data = None
         code_data = None
 
+        suggested_command = static_map.get("suggested_command")
+
+        if suggested_command is None:
+            console.print(f"\n[bold yellow]Project Type: {result['project_type']}[/bold yellow]")
+            console.print("[bold yellow]Skipping execution. This project type is not yet supported in this version.[/bold yellow]")
+            console.print(f"[bold yellow]{static_map.get('coming_soon_message', '')}[/bold yellow]")
+            console.print("[bold yellow]Supported: Java Maven (pom.xml), Python (requirements.txt / pyproject.toml)[/bold yellow]")
+            console.print("[bold green]Exiting cleanly with exit code 0.[/bold green]")
+
+            generate_report(
+                result,
+                None,
+                None,
+                None,
+                None,
+            )
+            sys.exit(0)
+
         console.print("\n[bold magenta]Execution Started[/bold magenta]")
 
         execution_result = execute_command(
