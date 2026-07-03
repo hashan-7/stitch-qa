@@ -21,7 +21,7 @@ def cli():
 @cli.command("analyze-code")
 @click.option(
     "--code-agent-url",
-    default="https://hashan-7-stitch-qa-code-agent.hf.space",
+    default="https://hashan-77-stitch-qa-code-agent.hf.space",
 )
 def analyze_code(code_agent_url):
     run_analyze_code(code_agent_url)
@@ -35,15 +35,15 @@ def analyze_code(code_agent_url):
 @click.option("--code-fix", is_flag=True, help="Send repair context to the code agent.")
 @click.option(
     "--agent-url",
-    default="https://hashan-7-stitch-qa-log-agent.hf.space",
+    default="https://hashan-77-stitch-qa-log-agent.hf.space",
 )
 @click.option(
     "--repair-agent-url",
-    default="https://hashan-7-stitch-qa-repair-agent.hf.space",
+    default="https://hashan-77-stitch-qa-repair-agent.hf.space",
 )
 @click.option(
     "--code-agent-url",
-    default="https://hashan-7-stitch-qa-code-agent.hf.space",
+    default="https://hashan-77-stitch-qa-code-agent.hf.space",
 )
 def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code_agent_url):
     try:
