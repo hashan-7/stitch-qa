@@ -31,21 +31,102 @@ def build_status_label(execution_result, agent_data=None):
     return "PASS" if execution_result["success"] else "FAIL"
 
 
+def build_static_mapping_json(static_map):
+    mapping = {
+        "build_file": static_map.get("build_file"),
+        "main_source_dir": static_map.get("main_source_dir"),
+        "test_source_dir": static_map.get("test_source_dir"),
+        "main_file": static_map.get("main_file"),
+        "suggested_command": static_map.get("suggested_command"),
+    }
+
+    if static_map.get("has_maven_wrapper") is not None:
+        mapping["has_maven_wrapper"] = static_map.get("has_maven_wrapper")
+
+    if static_map.get("wrapper_command"):
+        mapping["wrapper_command"] = static_map.get("wrapper_command")
+
+    if static_map.get("wrapper_recommendation"):
+        mapping["wrapper_recommendation"] = static_map.get("wrapper_recommendation")
+
+    return mapping
+
+
+def build_static_mapping_markdown(static_map):
+    lines = [
+        f"- Build File: {safe_value(static_map.get('build_file'), 'Not available')}",
+        f"- Main Source Directory: {safe_value(static_map.get('main_source_dir'), 'Not available')}",
+        f"- Test Source Directory: {safe_value(static_map.get('test_source_dir'), 'Not available')}",
+        f"- Main File: {safe_value(static_map.get('main_file'), 'Not available')}",
+        f"- Suggested Command: {safe_value(static_map.get('suggested_command'), 'Not available')}",
+    ]
+
+    if static_map.get("has_maven_wrapper"):
+        lines.append(f"- Maven Wrapper: {static_map.get('has_maven_wrapper')}")
+        lines.append(f"- Wrapper Command: {safe_value(static_map.get('wrapper_command'), 'Not available')}")
+
+    if static_map.get("wrapper_recommendation"):
+        lines.append(f"- Wrapper Recommendation: {static_map.get('wrapper_recommendation')}")
+
+    return "\n".join(lines)
+
+
 def generate_report(scan_result, execution_result, agent_data=None, repair_data=None, code_data=None):
     project_path = Path(scan_result["project_path"])
+    project_type = scan_result.get("project_type", "Unknown")
+    static_map = scan_result.get("static_map", {})
+    generated_at = str(datetime.now())
+
+    if execution_result is None:
+        coming_soon_message = static_map.get("coming_soon_message", "Support for this project type is planned for a future release.")
+
+        md_content = f"""# Stitch QA Report
+
+## Project Type Not Yet Supported
+
+**Detected Project Type:** {project_type}
+
+**Message:** {coming_soon_message}
+
+Stitch QA V2 currently supports:
+- **Java Maven** (pom.xml)
+- **Python** (requirements.txt / pyproject.toml)
+
+**Action Taken:** Execution was skipped. No tests were run, and no agents were called.
+**Exit Code:** 0 (Clean skip)
+
+Thank you for trying Stitch QA! 
+
+---
+Generated At: {generated_at}
+"""
+
+        json_content = {
+            "final_status": "SKIPPED",
+            "project_type": project_type,
+            "coming_soon_message": coming_soon_message,
+            "skip_reason": "Unsupported or unrecognized project type.",
+            "exit_code": 0,
+            "generated_at": generated_at
+        }
+
+        md_report_path = project_path / "STITCH_QA_REPORT.md"
+        json_report_path = project_path / "STITCH_QA_REPORT.json"
+
+        md_report_path.write_text(md_content, encoding="utf-8")
+        json_report_path.write_text(json.dumps(json_content, indent=2), encoding="utf-8")
+
+        return md_report_path
 
     md_report_path = project_path / "STITCH_QA_REPORT.md"
     json_report_path = project_path / "STITCH_QA_REPORT.json"
 
-    static_map = scan_result["static_map"]
     project_recommendations = scan_result.get("project_recommendations", [])
 
     final_status = build_status_label(execution_result, agent_data)
 
     stdout_text = execution_result["stdout"][-2000:] if execution_result["stdout"] else ""
     stderr_text = execution_result["stderr"][-2000:] if execution_result["stderr"] else ""
-
-    generated_at = str(datetime.now())
 
     json_content = {
         "project": {
@@ -55,16 +136,7 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
             "total_folders": scan_result["total_folders"],
             "ignored_items": scan_result["ignored_items"],
         },
-        "static_mapping": {
-            "build_file": static_map.get("build_file"),
-            "main_source_dir": static_map.get("main_source_dir"),
-            "test_source_dir": static_map.get("test_source_dir"),
-            "main_file": static_map.get("main_file"),
-            "suggested_command": static_map.get("suggested_command"),
-            "has_maven_wrapper": static_map.get("has_maven_wrapper"),
-            "wrapper_command": static_map.get("wrapper_command"),
-            "wrapper_recommendation": static_map.get("wrapper_recommendation"),
-        },
+        "static_mapping": build_static_mapping_json(static_map),
         "project_recommendations": format_list(project_recommendations),
         "execution": {
             "command": execution_result["command"],
@@ -121,6 +193,7 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
     log_warnings = format_markdown_list(agent_data.get("warnings") if agent_data else [])
     repair_suggestions = format_markdown_list(repair_data.get("suggestions") if repair_data else [])
     project_recommendations_text = format_markdown_list(project_recommendations)
+    static_mapping_text = build_static_mapping_markdown(static_map)
 
     code_section = ""
 
@@ -169,13 +242,7 @@ def generate_report(scan_result, execution_result, agent_data=None, repair_data=
         f"- Ignored Items: {scan_result['ignored_items']}\n\n"
 
         "## Static Mapping\n\n"
-        f"- Build File: {safe_value(static_map.get('build_file'), 'Not available')}\n"
-        f"- Main Source Directory: {safe_value(static_map.get('main_source_dir'), 'Not available')}\n"
-        f"- Test Source Directory: {safe_value(static_map.get('test_source_dir'), 'Not available')}\n"
-        f"- Main File: {safe_value(static_map.get('main_file'), 'Not available')}\n"
-        f"- Suggested Command: {safe_value(static_map.get('suggested_command'), 'Not available')}\n"
-        f"- Maven Wrapper: {safe_value(static_map.get('has_maven_wrapper'), False)}\n"
-        f"- Wrapper Command: {safe_value(static_map.get('wrapper_command'), 'Not available')}\n\n"
+        f"{static_mapping_text}\n\n"
 
         "## Project Recommendations\n\n"
         f"{project_recommendations_text}\n\n"

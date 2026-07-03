@@ -133,7 +133,13 @@ def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, a
         }
 
 
-def suggest_code_fix_with_agent(code_agent_url, scan_result, execution_result, agent_data=None, repair_data=None):
+def suggest_code_fix_with_agent(
+    code_agent_url,
+    scan_result,
+    execution_result,
+    agent_data=None,
+    repair_data=None
+):
     static_map = scan_result.get("static_map", {})
     failure_context = get_failure_context(execution_result)
 

@@ -30,3 +30,23 @@ Thumbs.db
 .huggingface/
 .cache/
 *.tmp
+
+# Test and demo directories - keep them local only
+demo-*/
+test-*/
+temp-*/
+scratch-*/
+test-empty*/
+demo-python*/
+demo-php*/
+demo-ts*/
+
+# Local development files
+*.local
+*.dev
+*.test
+
+# IDE specific
+*.swp
+*.swo
+*~

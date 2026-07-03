@@ -4,7 +4,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import os
 import re
 
-HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-small")
+HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-large")
 
 tokenizer = None
 model = None

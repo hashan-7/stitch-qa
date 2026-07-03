@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "CLI tool for Stitch QA"
 dependencies = [
     "click",
-    "rich"
+    "rich",
+    "requests"
 ]
 
 [project.scripts]

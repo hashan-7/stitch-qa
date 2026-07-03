@@ -1,8 +1,8 @@
 ---
 title: Stitch QA Repair Agent
 emoji: 🛠️
-colorFrom: yellow
-colorTo: red
+colorFrom: purple
+colorTo: blue
 sdk: docker
 app_port: 7860
 ---
