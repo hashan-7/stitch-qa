@@ -15,6 +15,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Debug - List files
+        run: |
+          echo "=== Root directory ==="
+          ls -la
+          echo "=== Dockerfile exists? ==="
+          ls -la Dockerfile || echo "Dockerfile NOT FOUND"
+          echo "=== action.yml exists? ==="
+          ls -la action.yml || echo "action.yml NOT FOUND"
+          echo "=== demo folder exists? ==="
+          ls -la demo || echo "demo NOT FOUND"
+
       - name: Create PHP demo for unsupported test
         run: |
           mkdir -p demo-php
