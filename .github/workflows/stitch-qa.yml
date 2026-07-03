@@ -17,15 +17,8 @@ jobs:
 
       - name: Fix mvnw permissions
         run: |
-          chmod +x demo/mvnw demo-broken/mvnw 2>/dev/null || true
+          chmod +x demo/mvnw 2>/dev/null || true
           find . -name "mvnw" -exec chmod +x {} \; 2>/dev/null || true
-
-      - name: Debug - List files
-        run: |
-          echo "=== Root directory ==="
-          ls -la
-          echo "=== demo/mvnw permissions ==="
-          ls -la demo/mvnw || echo "demo/mvnw NOT FOUND"
 
       - name: Create PHP demo for unsupported test
         run: |
