@@ -1,5 +1,6 @@
 from pathlib import Path
 from collections import Counter
+import platform
 
 IGNORED_DIRS = {
     ".git",
@@ -204,6 +205,7 @@ def find_python_main_file(files):
 
 def create_static_map(project_path, files, project_type):
     file_set = set(files)
+    current_os = platform.system()
 
     static_map = {
         "build_file": None,
@@ -233,19 +235,30 @@ def create_static_map(project_path, files, project_type):
                 static_map["main_file"] = file
                 break
 
-        static_map["suggested_command"] = "mvn test"
-
-        if "mvnw.cmd" in file_set:
-            static_map["has_maven_wrapper"] = True
-            static_map["wrapper_command"] = ".\\mvnw.cmd test"
-            static_map["suggested_command"] = ".\\mvnw.cmd test"
-
-        elif "mvnw" in file_set:
-            static_map["has_maven_wrapper"] = True
-            static_map["wrapper_command"] = "./mvnw test"
-            static_map["suggested_command"] = "./mvnw test"
-
+        if current_os == "Windows":
+            if "mvnw.cmd" in file_set:
+                static_map["has_maven_wrapper"] = True
+                static_map["wrapper_command"] = ".\\mvnw.cmd test"
+                static_map["suggested_command"] = ".\\mvnw.cmd test"
+            elif "mvnw" in file_set:
+                static_map["has_maven_wrapper"] = True
+                static_map["wrapper_command"] = "./mvnw test"
+                static_map["suggested_command"] = "./mvnw test"
+            else:
+                static_map["suggested_command"] = "mvn test"
         else:
+            if "mvnw" in file_set:
+                static_map["has_maven_wrapper"] = True
+                static_map["wrapper_command"] = "./mvnw test"
+                static_map["suggested_command"] = "./mvnw test"
+            elif "mvnw.cmd" in file_set:
+                static_map["has_maven_wrapper"] = True
+                static_map["wrapper_command"] = "./mvnw.cmd test"
+                static_map["suggested_command"] = "./mvnw.cmd test"
+            else:
+                static_map["suggested_command"] = "mvn test"
+
+        if not static_map.get("has_maven_wrapper"):
             static_map["wrapper_recommendation"] = (
                 "This Maven project does not include Maven Wrapper files. "
                 "For portable execution, add Maven Wrapper files such as mvnw, mvnw.cmd, "

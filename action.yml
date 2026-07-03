@@ -1,0 +1,24 @@
+name: 'Stitch QA Scan'
+description: 'Run AI-powered QA scan on your project'
+author: 'h7'
+
+inputs:
+  project-path:
+    description: 'Path to the project root'
+    required: false
+    default: '.'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - 'scan'
+    - ${{ inputs.project-path }}
+    - '--run'
+    - '--analyze'
+    - '--repair'
+    - '--code-fix'
+
+branding:
+  icon: 'check-circle'
+  color: 'purple'
