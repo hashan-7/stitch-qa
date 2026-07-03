@@ -53,6 +53,8 @@ docker run --rm -v ${PWD}:/project hashan-7/stitch-qa:v2 scan /project --run --a
 
 ## Quick Start
 
+![alt text](https://raw.githubusercontent.com/hashan-7/stitch-qa/main/docs/images/cli-demo.png)
+
 ### Scan a Java Maven project
 
 ```bash
@@ -123,6 +125,8 @@ Supported: Java Maven (pom.xml), Python (requirements.txt / pyproject.toml)
 Exiting cleanly with exit code 0.
 ```
 
+https://raw.githubusercontent.com/hashan-7/stitch-qa/main/docs/images/unsupported-demo.png
+
 ## Reports
 
 After a full scan, Stitch QA generates:
@@ -190,6 +194,8 @@ jobs:
           name: stitch-qa-reports
           path: STITCH_QA_REPORT.*
 ```
+
+https://raw.githubusercontent.com/hashan-7/stitch-qa/main/docs/images/gh-actions.png
 
 ## Basic Commands
 
