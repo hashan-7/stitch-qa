@@ -5,7 +5,7 @@ import os
 import torch
 import re
 
-HF_MODEL = os.getenv("HF_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
+HF_MODEL = os.getenv("HF_MODEL", "Qwen/Qwen2.5-Coder-1.5B-Instruct")
 
 tokenizer = None
 model = None
