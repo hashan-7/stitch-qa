@@ -22,6 +22,13 @@ def is_failed_status(status):
     return normalized_status in {"FAIL", "FAILED", "ERROR"}
 
 
+def format_console_list(items):
+    if not items:
+        return "None"
+
+    return ", ".join(str(item) for item in items)
+
+
 @click.group()
 def cli():
     pass
@@ -80,8 +87,54 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
     console.print(f"[bold]Build File:[/bold] {static_map['build_file']}")
     console.print(f"[bold]Main Source Dir:[/bold] {static_map['main_source_dir']}")
     console.print(f"[bold]Test Source Dir:[/bold] {static_map['test_source_dir']}")
+    console.print(
+        f"[bold]Test Source Dirs:[/bold] "
+        f"{format_console_list(static_map.get('test_source_dirs', []))}"
+    )
     console.print(f"[bold]Main File:[/bold] {static_map['main_file']}")
     console.print(f"[bold]Suggested Command:[/bold] {static_map['suggested_command']}")
+
+    console.print("\n[bold cyan]Test Detection[/bold cyan]")
+    console.print(
+        f"[bold]Tests Found:[/bold] "
+        f"{'Yes' if static_map.get('has_tests') else 'No'}"
+    )
+    console.print(
+        f"[bold]Test Files Count:[/bold] "
+        f"{static_map.get('test_files_count', 0)}"
+    )
+    console.print(
+        f"[bold]Test Framework:[/bold] "
+        f"{static_map.get('test_framework')}"
+    )
+    console.print(
+        f"[bold]Detection Source:[/bold] "
+        f"{static_map.get('test_detection_source')}"
+    )
+    console.print(
+        f"[bold]Test File Patterns:[/bold] "
+        f"{format_console_list(static_map.get('test_file_patterns', []))}"
+    )
+    console.print(
+        f"[bold]Configured Test Paths:[/bold] "
+        f"{format_console_list(static_map.get('configured_test_paths', []))}"
+    )
+
+    if static_map.get("test_detection_warning"):
+        console.print(
+            f"[bold yellow]Detection Warning:[/bold yellow] "
+            f"{static_map.get('test_detection_warning')}"
+        )
+
+    if static_map.get("test_files"):
+        console.print("\n[bold cyan]Detected Test Files[/bold cyan]")
+        for file in static_map["test_files"][:20]:
+            console.print(f"- {file}")
+
+        if static_map["test_files_count"] > 20:
+            console.print(
+                f"... and {static_map['test_files_count'] - 20} more test files"
+            )
 
     if result.get("project_recommendations"):
         console.print("\n[bold yellow]Project Recommendations[/bold yellow]")
