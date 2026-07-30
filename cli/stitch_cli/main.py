@@ -2,10 +2,12 @@ import sys
 import click
 from rich.console import Console
 from stitch_cli.scanner import scan_project
-from stitch_cli.executor import execute_command
+from stitch_cli.executor import build_skipped_result, execute_command
 from stitch_cli.reporter import generate_report
 from stitch_cli.agent_client import (
     analyze_logs_with_agent,
+    build_unavailable_source_review,
+    review_source_with_agent,
     suggest_repair_with_agent,
     suggest_code_fix_with_agent,
 )
@@ -29,6 +31,54 @@ def format_console_list(items):
     return ", ".join(str(item) for item in items)
 
 
+def build_no_tests_skip_reason(static_map):
+    framework = static_map.get("test_framework") or "the detected test framework"
+    patterns = format_console_list(static_map.get("test_file_patterns", []))
+    return (
+        f"No test files compatible with {framework} were detected using the active "
+        f"discovery patterns: {patterns}."
+    )
+
+
+def print_source_review_result(source_review_data):
+    console.print("\n[bold magenta]Agent 3 Source Code QA Review[/bold magenta]")
+    console.print(f"[bold]Status:[/bold] {source_review_data.get('status')}")
+    console.print(f"[bold]Mode:[/bold] {source_review_data.get('mode')}")
+    console.print(
+        f"[bold]Reviewed Files:[/bold] "
+        f"{source_review_data.get('reviewed_files_count', 0)}"
+    )
+    console.print(
+        f"[bold]Findings:[/bold] "
+        f"{source_review_data.get('findings_count', 0)}"
+    )
+    console.print(f"[bold]Risk Level:[/bold] {source_review_data.get('risk_level')}")
+    console.print(
+        f"[bold]Release Recommendation:[/bold] "
+        f"{source_review_data.get('release_recommendation')}"
+    )
+    console.print(f"[bold]Summary:[/bold] {source_review_data.get('summary')}")
+
+    findings = source_review_data.get("findings", [])
+
+    if findings:
+        console.print("\n[bold cyan]Source Review Findings[/bold cyan]")
+        for finding in findings[:10]:
+            location = finding.get("file_path") or "Project"
+            if finding.get("line"):
+                location = f"{location}:{finding.get('line')}"
+            console.print(
+                f"- [{finding.get('severity', 'UNKNOWN')}] "
+                f"{finding.get('title', 'Source finding')} ({location})"
+            )
+
+        if len(findings) > 10:
+            console.print(f"... and {len(findings) - 10} more source-review findings")
+
+    for warning in source_review_data.get("warnings", []):
+        console.print(f"[bold yellow]Source Review Warning:[/bold yellow] {warning}")
+
+
 @click.group()
 def cli():
     pass
@@ -45,7 +95,7 @@ def analyze_code(code_agent_url):
 
 @cli.command()
 @click.argument("path", required=False, default=".")
-@click.option("--run", is_flag=True, help="Run the suggested project command.")
+@click.option("--run", is_flag=True, help="Run the supported QA workflow.")
 @click.option("--analyze", is_flag=True, help="Send execution logs to the log agent.")
 @click.option("--repair", is_flag=True, help="Send execution logs to the repair agent.")
 @click.option("--code-fix", is_flag=True, help="Send repair context to the code agent.")
@@ -82,6 +132,7 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         console.print(f"- {extension}: {count}")
 
     static_map = result["static_map"]
+    source_review = result.get("source_review", {})
 
     console.print("\n[bold cyan]Static Mapping[/bold cyan]")
     console.print(f"[bold]Build File:[/bold] {static_map['build_file']}")
@@ -136,6 +187,30 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
                 f"... and {static_map['test_files_count'] - 20} more test files"
             )
 
+    console.print("\n[bold cyan]Source Review Discovery[/bold cyan]")
+    console.print(
+        f"[bold]Supported:[/bold] "
+        f"{'Yes' if source_review.get('supported') else 'No'}"
+    )
+    console.print(
+        f"[bold]Application Source Files:[/bold] "
+        f"{source_review.get('source_files_count', 0)}"
+    )
+    console.print(
+        f"[bold]Source Extensions:[/bold] "
+        f"{format_console_list(source_review.get('file_extensions', []))}"
+    )
+    console.print(
+        f"[bold]Excluded Test Files:[/bold] "
+        f"{source_review.get('excluded_test_files_count', 0)}"
+    )
+
+    if source_review.get("warning"):
+        console.print(
+            f"[bold yellow]Source Review Warning:[/bold yellow] "
+            f"{source_review.get('warning')}"
+        )
+
     if result.get("project_recommendations"):
         console.print("\n[bold yellow]Project Recommendations[/bold yellow]")
         for recommendation in result["project_recommendations"]:
@@ -150,25 +225,33 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
 
     if (analyze or repair or code_fix) and not run:
         console.print("\n[bold red]Analyze/repair/code-fix requires --run.[/bold red]")
-        console.print("Use: stitch scan demo --run --analyze --repair --code-fix")
+        console.print("Use: stitch scan <path> --run --analyze --repair --code-fix")
         sys.exit(1)
 
     if code_fix and not repair:
         console.print("\n[bold yellow]Warning:[/bold yellow] --code-fix works best with --repair.")
-        console.print("Recommended: stitch scan demo --run --analyze --repair --code-fix")
+        console.print("Recommended: stitch scan <path> --run --analyze --repair --code-fix")
 
     if run:
         agent_data = None
         repair_data = None
         code_data = None
-
+        source_review_data = None
         suggested_command = static_map.get("suggested_command")
 
         if suggested_command is None:
             console.print(f"\n[bold yellow]Project Type: {result['project_type']}[/bold yellow]")
-            console.print("[bold yellow]Skipping execution. This project type is not yet supported in this version.[/bold yellow]")
-            console.print(f"[bold yellow]{static_map.get('coming_soon_message', '')}[/bold yellow]")
-            console.print("[bold yellow]Supported: Java Maven (pom.xml), Python (requirements.txt / pyproject.toml)[/bold yellow]")
+            console.print(
+                "[bold yellow]Skipping execution. This project type is not yet supported "
+                "in this version.[/bold yellow]"
+            )
+            console.print(
+                f"[bold yellow]{static_map.get('coming_soon_message', '')}[/bold yellow]"
+            )
+            console.print(
+                "[bold yellow]Supported: Java Maven (pom.xml), Python "
+                "(requirements.txt / pyproject.toml)[/bold yellow]"
+            )
             console.print("[bold green]Exiting cleanly with exit code 0.[/bold green]")
 
             generate_report(
@@ -177,120 +260,158 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
                 None,
                 None,
                 None,
+                None,
             )
             sys.exit(0)
 
-        console.print("\n[bold magenta]Execution Started[/bold magenta]")
-
-        execution_result = execute_command(
-            result["project_path"],
-            static_map["suggested_command"],
+        console.print("\n[bold magenta]Agent 3 Source Review Started[/bold magenta]")
+        source_review_result = review_source_with_agent(
+            code_agent_url,
+            result,
         )
 
-        console.print(f"[bold]Command:[/bold] {execution_result['command']}")
-        console.print(f"[bold]Success:[/bold] {execution_result['success']}")
-        console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
-
-        console.print("\n[bold cyan]STDOUT[/bold cyan]")
-        console.print(execution_result["stdout"][-3000:] or "No stdout output.")
-
-        console.print("\n[bold red]STDERR[/bold red]")
-        console.print(execution_result["stderr"][-3000:] or "No stderr output.")
-
-        if not execution_result.get("success"):
-            exit_code = 1
-
-        if analyze:
-            console.print("\n[bold magenta]Log Agent Analysis Started[/bold magenta]")
-
-            analysis_result = analyze_logs_with_agent(
-                agent_url,
+        if source_review_result["success"]:
+            source_review_data = source_review_result["data"]
+        else:
+            source_review_data = build_unavailable_source_review(
                 result,
-                execution_result,
+                source_review_result["error"],
             )
 
-            if analysis_result["success"]:
-                agent_data = analysis_result["data"]
+        print_source_review_result(source_review_data)
 
-                console.print(f"[bold]Agent:[/bold] {agent_data.get('agent')}")
-                console.print(f"[bold]Mode:[/bold] {agent_data.get('mode', 'unknown')}")
-                console.print(f"[bold]Final Status:[/bold] {agent_data.get('final_status')}")
-                console.print(f"[bold]Summary:[/bold] {agent_data.get('summary')}")
-                console.print(f"[bold]Root Cause:[/bold] {agent_data.get('root_cause')}")
-                console.print(f"[bold]Recommendation:[/bold] {agent_data.get('recommendation')}")
-
-                if is_failed_status(agent_data.get("final_status")):
-                    exit_code = 1
-
-                if agent_data.get("llm_error"):
-                    console.print("\n[bold red]LLM Error[/bold red]")
-                    console.print(agent_data.get("llm_error"))
-
-                console.print("\n[bold cyan]Issues[/bold cyan]")
-                for issue in agent_data.get("issues", []):
-                    console.print(f"- {issue}")
-
-                console.print("\n[bold yellow]Warnings[/bold yellow]")
-                for warning in agent_data.get("warnings", []):
-                    console.print(f"- {warning}")
-            else:
-                console.print("[bold red]Log agent request failed.[/bold red]")
-                console.print(analysis_result["error"])
-
-        if repair:
-            console.print("\n[bold magenta]Repair Agent Started[/bold magenta]")
-
-            repair_result = suggest_repair_with_agent(
-                repair_agent_url,
-                result,
-                execution_result,
-                agent_data,
+        if not static_map.get("has_tests"):
+            skip_reason = build_no_tests_skip_reason(static_map)
+            execution_result = build_skipped_result(
+                suggested_command,
+                skip_reason,
             )
 
-            if repair_result["success"]:
-                repair_data = repair_result["data"]
+            console.print("\n[bold yellow]Test Execution Skipped[/bold yellow]")
+            console.print(f"[bold]Status:[/bold] {execution_result['status']}")
+            console.print(f"[bold]Command Not Run:[/bold] {execution_result['command']}")
+            console.print(f"[bold]Reason:[/bold] {execution_result['skip_reason']}")
+            console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
 
-                console.print(f"[bold]Agent:[/bold] {repair_data.get('agent')}")
-                console.print(f"[bold]Mode:[/bold] {repair_data.get('mode', 'unknown')}")
-                console.print(f"[bold]Risk Level:[/bold] {repair_data.get('risk_level')}")
-                console.print(f"[bold]Auto Apply:[/bold] {repair_data.get('auto_apply')}")
-                console.print(f"[bold]Summary:[/bold] {repair_data.get('summary')}")
-                console.print(f"[bold]Next Action:[/bold] {repair_data.get('next_action')}")
+            if analyze or repair or code_fix:
+                console.print(
+                    "\n[bold yellow]Runtime Log Agent, Repair Agent, and code-fix flow were "
+                    "skipped because no test command was executed. Agent 3 source review "
+                    "was still completed independently.[/bold yellow]"
+                )
+        else:
+            console.print("\n[bold magenta]Execution Started[/bold magenta]")
 
-                console.print("\n[bold cyan]Repair Suggestions[/bold cyan]")
-                for suggestion in repair_data.get("suggestions", []):
-                    console.print(f"- {suggestion}")
-            else:
-                console.print("[bold red]Repair agent request failed.[/bold red]")
-                console.print(repair_result["error"])
-
-        if code_fix:
-            console.print("\n[bold magenta]Code Agent Started[/bold magenta]")
-
-            code_result = suggest_code_fix_with_agent(
-                code_agent_url,
-                result,
-                execution_result,
-                agent_data,
-                repair_data,
+            execution_result = execute_command(
+                result["project_path"],
+                suggested_command,
             )
 
-            if code_result["success"]:
-                code_data = code_result["data"]
+            console.print(f"[bold]Status:[/bold] {execution_result['status']}")
+            console.print(f"[bold]Command:[/bold] {execution_result['command']}")
+            console.print(f"[bold]Success:[/bold] {execution_result['success']}")
+            console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
 
-                console.print(f"[bold]Agent:[/bold] {code_data.get('agent')}")
-                console.print(f"[bold]Mode:[/bold] {code_data.get('mode', 'unknown')}")
-                console.print(f"[bold]Risk Level:[/bold] {code_data.get('risk_level')}")
-                console.print(f"[bold]Auto Apply:[/bold] {code_data.get('auto_apply')}")
-                console.print(f"[bold]Summary:[/bold] {code_data.get('summary')}")
-                console.print(f"[bold]Verification:[/bold] {code_data.get('verification')}")
+            console.print("\n[bold cyan]STDOUT[/bold cyan]")
+            console.print(execution_result["stdout"][-3000:] or "No stdout output.")
 
-                if code_data.get("llm_error"):
-                    console.print("\n[bold red]Code Agent LLM Error[/bold red]")
-                    console.print(code_data.get("llm_error"))
-            else:
-                console.print("[bold red]Code agent request failed.[/bold red]")
-                console.print(code_result["error"])
+            console.print("\n[bold red]STDERR[/bold red]")
+            console.print(execution_result["stderr"][-3000:] or "No stderr output.")
+
+            if not execution_result.get("success"):
+                exit_code = 1
+
+            if analyze:
+                console.print("\n[bold magenta]Log Agent Analysis Started[/bold magenta]")
+
+                analysis_result = analyze_logs_with_agent(
+                    agent_url,
+                    result,
+                    execution_result,
+                )
+
+                if analysis_result["success"]:
+                    agent_data = analysis_result["data"]
+
+                    console.print(f"[bold]Agent:[/bold] {agent_data.get('agent')}")
+                    console.print(f"[bold]Mode:[/bold] {agent_data.get('mode', 'unknown')}")
+                    console.print(f"[bold]Final Status:[/bold] {agent_data.get('final_status')}")
+                    console.print(f"[bold]Summary:[/bold] {agent_data.get('summary')}")
+                    console.print(f"[bold]Root Cause:[/bold] {agent_data.get('root_cause')}")
+                    console.print(f"[bold]Recommendation:[/bold] {agent_data.get('recommendation')}")
+
+                    if is_failed_status(agent_data.get("final_status")):
+                        exit_code = 1
+
+                    if agent_data.get("llm_error"):
+                        console.print("\n[bold red]LLM Error[/bold red]")
+                        console.print(agent_data.get("llm_error"))
+
+                    console.print("\n[bold cyan]Issues[/bold cyan]")
+                    for issue in agent_data.get("issues", []):
+                        console.print(f"- {issue}")
+
+                    console.print("\n[bold yellow]Warnings[/bold yellow]")
+                    for warning in agent_data.get("warnings", []):
+                        console.print(f"- {warning}")
+                else:
+                    console.print("[bold red]Log agent request failed.[/bold red]")
+                    console.print(analysis_result["error"])
+
+            if repair:
+                console.print("\n[bold magenta]Repair Agent Started[/bold magenta]")
+
+                repair_result = suggest_repair_with_agent(
+                    repair_agent_url,
+                    result,
+                    execution_result,
+                    agent_data,
+                )
+
+                if repair_result["success"]:
+                    repair_data = repair_result["data"]
+
+                    console.print(f"[bold]Agent:[/bold] {repair_data.get('agent')}")
+                    console.print(f"[bold]Mode:[/bold] {repair_data.get('mode', 'unknown')}")
+                    console.print(f"[bold]Risk Level:[/bold] {repair_data.get('risk_level')}")
+                    console.print(f"[bold]Auto Apply:[/bold] {repair_data.get('auto_apply')}")
+                    console.print(f"[bold]Summary:[/bold] {repair_data.get('summary')}")
+                    console.print(f"[bold]Next Action:[/bold] {repair_data.get('next_action')}")
+
+                    console.print("\n[bold cyan]Repair Suggestions[/bold cyan]")
+                    for suggestion in repair_data.get("suggestions", []):
+                        console.print(f"- {suggestion}")
+                else:
+                    console.print("[bold red]Repair agent request failed.[/bold red]")
+                    console.print(repair_result["error"])
+
+            if code_fix:
+                console.print("\n[bold magenta]Code Agent Repair Guidance Started[/bold magenta]")
+
+                code_result = suggest_code_fix_with_agent(
+                    code_agent_url,
+                    result,
+                    execution_result,
+                    agent_data,
+                    repair_data,
+                )
+
+                if code_result["success"]:
+                    code_data = code_result["data"]
+
+                    console.print(f"[bold]Agent:[/bold] {code_data.get('agent')}")
+                    console.print(f"[bold]Mode:[/bold] {code_data.get('mode', 'unknown')}")
+                    console.print(f"[bold]Risk Level:[/bold] {code_data.get('risk_level')}")
+                    console.print(f"[bold]Auto Apply:[/bold] {code_data.get('auto_apply')}")
+                    console.print(f"[bold]Summary:[/bold] {code_data.get('summary')}")
+                    console.print(f"[bold]Verification:[/bold] {code_data.get('verification')}")
+
+                    if code_data.get("llm_error"):
+                        console.print("\n[bold red]Code Agent LLM Error[/bold red]")
+                        console.print(code_data.get("llm_error"))
+                else:
+                    console.print("[bold red]Code agent request failed.[/bold red]")
+                    console.print(code_result["error"])
 
         report_path = generate_report(
             result,
@@ -298,10 +419,14 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
             agent_data,
             repair_data,
             code_data,
+            source_review_data,
         )
         console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
 
-    console.print("\n[bold green]Stitch QA scan completed.[/bold green] Review the generated report for details.")
+    console.print(
+        "\n[bold green]Stitch QA scan completed.[/bold green] "
+        "Review the generated report for details."
+    )
 
     if exit_code != 0:
         sys.exit(exit_code)

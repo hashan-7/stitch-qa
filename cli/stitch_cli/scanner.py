@@ -86,6 +86,35 @@ PYTEST_CONFIG_FILES = (
     "setup.cfg",
 )
 
+SOURCE_REVIEW_EXTENSIONS = {
+    "Python Project": {".py"},
+    "Java Maven Project": {".java"},
+}
+
+SOURCE_REVIEW_SENSITIVE_NAMES = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    "credentials",
+    "credentials.json",
+    "secrets.json",
+    "service-account.json",
+    "service_account.json",
+    "id_rsa",
+    "id_ed25519",
+}
+
+SOURCE_REVIEW_SENSITIVE_SUFFIXES = {
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+}
+
 
 def should_ignore(relative_path):
     if relative_path.name in IGNORED_FILES:
@@ -631,6 +660,123 @@ def build_project_recommendations(project_type, static_map):
     return recommendations
 
 
+
+def is_sensitive_source_path(file_path):
+    normalized = normalize_path(file_path)
+    path = PurePosixPath(normalized)
+    name = path.name.lower()
+
+    if name in SOURCE_REVIEW_SENSITIVE_NAMES:
+        return True
+
+    if any(name.endswith(suffix) for suffix in SOURCE_REVIEW_SENSITIVE_SUFFIXES):
+        return True
+
+    if name.startswith(".env."):
+        return True
+
+    return False
+
+
+def is_path_within(file_path, directory):
+    normalized_file = normalize_path(file_path)
+    normalized_directory = normalize_path(directory)
+
+    if normalized_directory == ".":
+        return True
+
+    return normalized_file == normalized_directory or normalized_file.startswith(
+        f"{normalized_directory}/"
+    )
+
+
+def source_file_priority(file_path, main_file):
+    normalized = normalize_path(file_path)
+    path = PurePosixPath(normalized)
+    return (
+        0 if normalized == normalize_path(main_file) else 1,
+        len(path.parts),
+        normalized.lower(),
+    )
+
+
+def build_source_review_map(project_path, project_type, files, static_map):
+    supported_extensions = SOURCE_REVIEW_EXTENSIONS.get(project_type)
+
+    source_review = {
+        "supported": bool(supported_extensions),
+        "source_files": [],
+        "source_files_count": 0,
+        "file_extensions": sorted(supported_extensions or []),
+        "excluded_test_files_count": 0,
+        "excluded_sensitive_files_count": 0,
+        "unreadable_files_count": 0,
+        "warning": None,
+    }
+
+    if not supported_extensions:
+        source_review["warning"] = (
+            "Source-code QA review is not available for this project type in the current version."
+        )
+        return source_review
+
+    test_files = {normalize_path(file) for file in static_map.get("test_files", [])}
+    test_source_dirs = [
+        normalize_path(directory)
+        for directory in static_map.get("test_source_dirs", [])
+        if directory and normalize_path(directory) != "."
+    ]
+    source_files = []
+
+    for file in files:
+        normalized_file = normalize_path(file)
+        path = PurePosixPath(normalized_file)
+
+        if path.suffix.lower() not in supported_extensions:
+            continue
+
+        if is_sensitive_source_path(normalized_file):
+            source_review["excluded_sensitive_files_count"] += 1
+            continue
+
+        is_test_file = normalized_file in test_files or path.name == "conftest.py"
+
+        if not is_test_file:
+            is_test_file = any(
+                is_path_within(normalized_file, test_directory)
+                for test_directory in test_source_dirs
+            )
+
+        if is_test_file:
+            source_review["excluded_test_files_count"] += 1
+            continue
+
+        absolute_path = (project_path / normalized_file).resolve()
+
+        try:
+            absolute_path.relative_to(project_path)
+        except ValueError:
+            source_review["unreadable_files_count"] += 1
+            continue
+
+        if not absolute_path.is_file():
+            source_review["unreadable_files_count"] += 1
+            continue
+
+        source_files.append(normalized_file)
+
+    main_file = static_map.get("main_file")
+    source_files.sort(key=lambda file: source_file_priority(file, main_file))
+    source_review["source_files"] = source_files
+    source_review["source_files_count"] = len(source_files)
+
+    if not source_files:
+        source_review["warning"] = (
+            "No reviewable application source files were detected after excluding tests and sensitive files."
+        )
+
+    return source_review
+
 def scan_project(path):
     project_path = Path(path).resolve()
 
@@ -666,6 +812,12 @@ def scan_project(path):
 
     project_type = detect_project_type(files)
     static_map = create_static_map(project_path, files, project_type)
+    source_review = build_source_review_map(
+        project_path,
+        project_type,
+        files,
+        static_map,
+    )
     project_recommendations = build_project_recommendations(project_type, static_map)
 
     return {
@@ -677,5 +829,6 @@ def scan_project(path):
         "files": files,
         "extension_counts": dict(sorted(extension_counts.items())),
         "static_map": static_map,
+        "source_review": source_review,
         "project_recommendations": project_recommendations,
     }

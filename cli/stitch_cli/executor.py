@@ -8,10 +8,7 @@ def classify_execution_failure(stderr_text, stdout_text=None, command=None):
     output_lower = f"{stdout_lower}\n{stderr_lower}"
     command_lower = (command or "").lower()
 
-    if (
-        "mvn" in stderr_lower
-        and "not recognized" in stderr_lower
-    ):
+    if "mvn" in stderr_lower and "not recognized" in stderr_lower:
         return {
             "failure_type": "MAVEN_NOT_AVAILABLE",
             "help_message": (
@@ -21,10 +18,7 @@ def classify_execution_failure(stderr_text, stdout_text=None, command=None):
             ),
         }
 
-    if (
-        "mvnw.cmd" in stderr_lower
-        and "not recognized" in stderr_lower
-    ):
+    if "mvnw.cmd" in stderr_lower and "not recognized" in stderr_lower:
         return {
             "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
             "help_message": (
@@ -79,7 +73,7 @@ def classify_execution_failure(stderr_text, stdout_text=None, command=None):
             "failure_type": "PYTHON_TESTS_NOT_FOUND",
             "help_message": (
                 "pytest ran but did not find any tests. "
-                "Add Python tests in a tests folder or files named test_*.py."
+                "Add Python tests in a tests folder or files named test_*.py or *_test.py."
             ),
         }
 
@@ -109,11 +103,33 @@ def build_stderr_with_help(stderr_text, failure_info):
     return f"Stitch QA Help: {help_message}"
 
 
-def build_result(success, exit_code, stdout, stderr, command):
-    failure_info = classify_execution_failure(stderr, stdout, command)
-    enhanced_stderr = build_stderr_with_help(stderr, failure_info)
+def build_result(
+    success,
+    exit_code,
+    stdout,
+    stderr,
+    command,
+    executed=True,
+    skipped=False,
+    skip_reason=None,
+):
+    if skipped:
+        failure_info = {
+            "failure_type": None,
+            "help_message": None,
+        }
+        enhanced_stderr = stderr
+        status = "SKIPPED"
+    else:
+        failure_info = classify_execution_failure(stderr, stdout, command)
+        enhanced_stderr = build_stderr_with_help(stderr, failure_info)
+        status = "PASSED" if success else "FAILED"
 
     return {
+        "status": status,
+        "executed": executed,
+        "skipped": skipped,
+        "skip_reason": skip_reason,
         "success": success,
         "exit_code": exit_code,
         "stdout": stdout,
@@ -122,6 +138,19 @@ def build_result(success, exit_code, stdout, stderr, command):
         "failure_type": failure_info.get("failure_type"),
         "help_message": failure_info.get("help_message"),
     }
+
+
+def build_skipped_result(command, skip_reason):
+    return build_result(
+        success=True,
+        exit_code=0,
+        stdout="",
+        stderr="",
+        command=command,
+        executed=False,
+        skipped=True,
+        skip_reason=skip_reason,
+    )
 
 
 def execute_command(project_path, command, timeout_seconds=120):
@@ -154,12 +183,24 @@ def execute_command(project_path, command, timeout_seconds=120):
             command=command,
         )
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        stdout_text = error.stdout or ""
+        stderr_text = error.stderr or ""
+
+        if isinstance(stdout_text, bytes):
+            stdout_text = stdout_text.decode(errors="replace")
+
+        if isinstance(stderr_text, bytes):
+            stderr_text = stderr_text.decode(errors="replace")
+
+        timeout_message = f"Command timed out after {timeout_seconds} seconds."
+        stderr_text = f"{stderr_text}\n{timeout_message}".strip()
+
         return build_result(
             success=False,
             exit_code=None,
-            stdout="",
-            stderr=f"Command timed out after {timeout_seconds} seconds.",
+            stdout=stdout_text,
+            stderr=stderr_text,
             command=command,
         )
 
