@@ -60,6 +60,14 @@ def build_execution_status(execution_result):
 
 def build_execution_summary(project_type, execution_result, source_review_data=None):
     command = safe_value(execution_result.get("command"), "Not available")
+    command_profile = safe_value(
+        execution_result.get("command_profile"),
+        "Not available",
+    )
+    execution_strategy = safe_value(
+        execution_result.get("execution_strategy"),
+        "Not available",
+    )
 
     if execution_result.get("skipped"):
         reason = safe_value(
@@ -71,14 +79,18 @@ def build_execution_summary(project_type, execution_result, source_review_data=N
             "NOT_RUN",
         )
         return (
-            f"The {project_type} was scanned successfully. Test execution was skipped because {reason} "
-            f"The command `{command}` was not run. Agent 3 source review status was `{source_status}`."
+            f"The {project_type} was scanned successfully. Test execution was skipped. "
+            f"Reason: {reason} The built-in command `{command}` was not run. "
+            f"The built-in execution profile `{command_profile}` was selected but not executed. "
+            f"Agent 3 source review status was `{source_status}`."
         )
 
     outcome = "completed successfully" if execution_result.get("success") else "failed"
     return (
-        f"The {project_type} was scanned and executed using `{command}`. "
-        f"The execution {outcome} with exit code {execution_result.get('exit_code')}."
+        f"The {project_type} was scanned and executed using the built-in profile "
+        f"`{command_profile}` with the `{execution_strategy}` strategy. "
+        f"The command `{command}` {outcome} with exit code "
+        f"{execution_result.get('exit_code')}."
     )
 
 
@@ -90,6 +102,9 @@ def build_static_mapping_json(static_map):
         "test_source_dirs": format_list(static_map.get("test_source_dirs", [])),
         "main_file": static_map.get("main_file"),
         "suggested_command": static_map.get("suggested_command"),
+        "execution_profile": static_map.get("execution_profile"),
+        "execution_policy": static_map.get("execution_policy"),
+        "execution_strategy": static_map.get("execution_strategy"),
         "has_tests": bool(static_map.get("has_tests")),
         "test_files_count": int(static_map.get("test_files_count", 0)),
         "test_files": format_list(static_map.get("test_files", [])),
@@ -120,6 +135,9 @@ def build_static_mapping_markdown(static_map):
         f"- Test Source Directories: {format_inline_list(static_map.get('test_source_dirs', []))}",
         f"- Main File: {safe_value(static_map.get('main_file'), 'Not available')}",
         f"- Suggested Command: {safe_value(static_map.get('suggested_command'), 'Not available')}",
+        f"- Execution Profile: {safe_value(static_map.get('execution_profile'), 'Not available')}",
+        f"- Execution Policy: {safe_value(static_map.get('execution_policy'), 'Not available')}",
+        f"- Execution Strategy: {safe_value(static_map.get('execution_strategy'), 'Not available')}",
         f"- Tests Found: {'Yes' if static_map.get('has_tests') else 'No'}",
         f"- Test Files Count: {static_map.get('test_files_count', 0)}",
         f"- Test Framework: {safe_value(static_map.get('test_framework'), 'Not available')}",
@@ -221,7 +239,7 @@ def format_source_findings(findings):
         line = finding.get("line")
         location = f"{file_path}:{line}" if line else file_path
         sections.append(
-            f"### [{severity}] {title}\n\n"
+            f"#### [{severity}] {title}\n\n"
             f"- Finding ID: {safe_value(finding.get('id'), 'Not available')}\n"
             f"- Location: `{location}`\n"
             f"- Category: {safe_value(finding.get('category'), 'Not available')}\n"
@@ -362,6 +380,15 @@ Generated At: {generated_at}
             "skipped": bool(execution_result.get("skipped", False)),
             "skip_reason": execution_result.get("skip_reason"),
             "command": execution_result.get("command"),
+            "command_profile": execution_result.get("command_profile"),
+            "execution_policy": execution_result.get("execution_policy"),
+            "execution_strategy": execution_result.get("execution_strategy"),
+            "shell_enabled": bool(execution_result.get("shell_enabled", False)),
+            "command_args": format_list(execution_result.get("command_args", [])),
+            "executable": execution_result.get("executable"),
+            "validation_status": execution_result.get("validation_status"),
+            "validation_error": execution_result.get("validation_error"),
+            "timeout_seconds": execution_result.get("timeout_seconds"),
             "success": execution_result.get("success"),
             "exit_code": execution_result.get("exit_code"),
             "failure_type": execution_result.get("failure_type"),
@@ -418,6 +445,34 @@ Generated At: {generated_at}
     static_mapping_text = build_static_mapping_markdown(static_map)
     detected_test_files_text = format_markdown_list(static_map.get("test_files", []))
     command_text = safe_value(execution_result.get("command"), "Not available")
+    command_profile_text = safe_value(
+        execution_result.get("command_profile"),
+        "Not available",
+    )
+    execution_policy_text = safe_value(
+        execution_result.get("execution_policy"),
+        "Not available",
+    )
+    execution_strategy_text = safe_value(
+        execution_result.get("execution_strategy"),
+        "Not available",
+    )
+    command_args_text = format_inline_list(
+        execution_result.get("command_args", []),
+        "None",
+    )
+    executable_text = safe_value(
+        execution_result.get("executable"),
+        "Not available",
+    )
+    validation_status_text = safe_value(
+        execution_result.get("validation_status"),
+        "Not available",
+    )
+    validation_error_text = safe_value(
+        execution_result.get("validation_error"),
+        "None",
+    )
     skip_reason_text = safe_value(execution_result.get("skip_reason"), "None")
     source_review_section = build_source_review_markdown(source_review_data)
 
@@ -476,6 +531,10 @@ Generated At: {generated_at}
         f"- Tests Found: {'Yes' if static_map.get('has_tests') else 'No'}\n"
         f"- Test Files Count: {static_map.get('test_files_count', 0)}\n"
         f"- Execution Status: **{execution_status}**\n"
+        f"- Command Profile: {command_profile_text}\n"
+        f"- Execution Policy: {execution_policy_text}\n"
+        f"- Execution Strategy: {execution_strategy_text}\n"
+        f"- Shell Enabled: {execution_result.get('shell_enabled', False)}\n"
         f"- Test Command: `{command_text}`\n"
         f"- Exit Code: {execution_result.get('exit_code')}\n\n"
         f"{execution_summary}\n\n"
@@ -495,7 +554,16 @@ Generated At: {generated_at}
         f"{project_recommendations_text}\n\n"
         "## Test Execution Result\n\n"
         f"- Status: {execution_status}\n"
+        f"- Command Profile: {command_profile_text}\n"
+        f"- Execution Policy: {execution_policy_text}\n"
+        f"- Execution Strategy: {execution_strategy_text}\n"
+        f"- Shell Enabled: {execution_result.get('shell_enabled', False)}\n"
+        f"- Validation Status: {validation_status_text}\n"
+        f"- Validation Error: {validation_error_text}\n"
         f"- Command: `{command_text}`\n"
+        f"- Resolved Arguments: `{command_args_text}`\n"
+        f"- Resolved Executable: `{executable_text}`\n"
+        f"- Timeout Seconds: {execution_result.get('timeout_seconds')}\n"
         f"- Executed: {execution_result.get('executed', True)}\n"
         f"- Skipped: {execution_result.get('skipped', False)}\n"
         f"- Skip Reason: {skip_reason_text}\n"
@@ -539,3 +607,4 @@ Generated At: {generated_at}
     md_report_path.write_text(md_content, encoding="utf-8")
 
     return md_report_path
+

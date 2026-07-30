@@ -144,6 +144,18 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
     )
     console.print(f"[bold]Main File:[/bold] {static_map['main_file']}")
     console.print(f"[bold]Suggested Command:[/bold] {static_map['suggested_command']}")
+    console.print(
+        f"[bold]Execution Profile:[/bold] "
+        f"{static_map.get('execution_profile')}"
+    )
+    console.print(
+        f"[bold]Execution Policy:[/bold] "
+        f"{static_map.get('execution_policy')}"
+    )
+    console.print(
+        f"[bold]Execution Strategy:[/bold] "
+        f"{static_map.get('execution_strategy')}"
+    )
 
     console.print("\n[bold cyan]Test Detection[/bold cyan]")
     console.print(
@@ -238,8 +250,9 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         code_data = None
         source_review_data = None
         suggested_command = static_map.get("suggested_command")
+        execution_profile = static_map.get("execution_profile")
 
-        if suggested_command is None:
+        if suggested_command is None or execution_profile is None:
             console.print(f"\n[bold yellow]Project Type: {result['project_type']}[/bold yellow]")
             console.print(
                 "[bold yellow]Skipping execution. This project type is not yet supported "
@@ -285,10 +298,15 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
             execution_result = build_skipped_result(
                 suggested_command,
                 skip_reason,
+                execution_profile,
             )
 
             console.print("\n[bold yellow]Test Execution Skipped[/bold yellow]")
             console.print(f"[bold]Status:[/bold] {execution_result['status']}")
+            console.print(f"[bold]Command Profile:[/bold] {execution_result['command_profile']}")
+            console.print(f"[bold]Execution Policy:[/bold] {execution_result['execution_policy']}")
+            console.print(f"[bold]Execution Strategy:[/bold] {execution_result['execution_strategy']}")
+            console.print(f"[bold]Shell Enabled:[/bold] {execution_result['shell_enabled']}")
             console.print(f"[bold]Command Not Run:[/bold] {execution_result['command']}")
             console.print(f"[bold]Reason:[/bold] {execution_result['skip_reason']}")
             console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
@@ -304,11 +322,21 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
 
             execution_result = execute_command(
                 result["project_path"],
+                execution_profile,
                 suggested_command,
             )
 
             console.print(f"[bold]Status:[/bold] {execution_result['status']}")
+            console.print(f"[bold]Command Profile:[/bold] {execution_result['command_profile']}")
+            console.print(f"[bold]Execution Policy:[/bold] {execution_result['execution_policy']}")
+            console.print(f"[bold]Execution Strategy:[/bold] {execution_result['execution_strategy']}")
+            console.print(f"[bold]Shell Enabled:[/bold] {execution_result['shell_enabled']}")
+            console.print(f"[bold]Validation Status:[/bold] {execution_result['validation_status']}")
             console.print(f"[bold]Command:[/bold] {execution_result['command']}")
+            console.print(
+                f"[bold]Resolved Args:[/bold] "
+                f"{format_console_list(execution_result.get('command_args', []))}"
+            )
             console.print(f"[bold]Success:[/bold] {execution_result['success']}")
             console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
 
@@ -430,3 +458,4 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
 
     if exit_code != 0:
         sys.exit(exit_code)
+

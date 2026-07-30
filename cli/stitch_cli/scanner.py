@@ -536,6 +536,9 @@ def create_static_map(project_path, files, project_type):
         "test_source_dirs": [],
         "main_file": None,
         "suggested_command": None,
+        "execution_profile": None,
+        "execution_policy": "BUILT_IN_ONLY",
+        "execution_strategy": "ARGUMENT_LIST",
         "has_tests": False,
         "test_files_count": 0,
         "test_files": [],
@@ -563,34 +566,28 @@ def create_static_map(project_path, files, project_type):
                 static_map["main_file"] = file
                 break
 
-        if current_os == "Windows":
-            if "mvnw.cmd" in file_set:
-                static_map["has_maven_wrapper"] = True
-                static_map["wrapper_command"] = ".\\mvnw.cmd test"
-                static_map["suggested_command"] = ".\\mvnw.cmd test"
-            elif "mvnw" in file_set:
-                static_map["has_maven_wrapper"] = True
-                static_map["wrapper_command"] = "./mvnw test"
-                static_map["suggested_command"] = "./mvnw test"
-            else:
-                static_map["suggested_command"] = "mvn test"
+        if current_os == "Windows" and "mvnw.cmd" in file_set:
+            static_map["has_maven_wrapper"] = True
+            static_map["wrapper_command"] = ".\\mvnw.cmd test"
+            static_map["suggested_command"] = ".\\mvnw.cmd test"
+        elif current_os != "Windows" and "mvnw" in file_set:
+            static_map["has_maven_wrapper"] = True
+            static_map["wrapper_command"] = "./mvnw test"
+            static_map["suggested_command"] = "./mvnw test"
         else:
-            if "mvnw" in file_set:
-                static_map["has_maven_wrapper"] = True
-                static_map["wrapper_command"] = "./mvnw test"
-                static_map["suggested_command"] = "./mvnw test"
-            elif "mvnw.cmd" in file_set:
-                static_map["has_maven_wrapper"] = True
-                static_map["wrapper_command"] = "./mvnw.cmd test"
-                static_map["suggested_command"] = "./mvnw.cmd test"
-            else:
-                static_map["suggested_command"] = "mvn test"
+            static_map["suggested_command"] = "mvn test"
+
+        static_map["execution_profile"] = (
+            "MAVEN_WRAPPER"
+            if static_map["has_maven_wrapper"]
+            else "MAVEN_SYSTEM"
+        )
 
         if not static_map["has_maven_wrapper"]:
             static_map["wrapper_recommendation"] = (
-                "This Maven project does not include Maven Wrapper files. "
-                "For portable execution, add Maven Wrapper files such as mvnw, mvnw.cmd, "
-                "and .mvn/wrapper so the project can run without requiring a global Maven installation."
+                "This Maven project does not include a usable Maven Wrapper for the current platform. "
+                "For portable execution, include mvnw, mvnw.cmd, and .mvn/wrapper so the project "
+                "can use the same Maven version without requiring a global Maven installation."
             )
 
     elif project_type == "Python Project":
@@ -621,6 +618,7 @@ def create_static_map(project_path, files, project_type):
             static_map["test_files"],
         )
         static_map["suggested_command"] = "python -m pytest"
+        static_map["execution_profile"] = "PYTHON_PYTEST"
 
     else:
         if project_type == "Unknown Project":

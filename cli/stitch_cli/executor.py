@@ -1,29 +1,97 @@
+import os
+import platform
+import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+EXECUTION_POLICY = "BUILT_IN_ONLY"
+EXECUTION_STRATEGY = "ARGUMENT_LIST"
+SUPPORTED_EXECUTION_PROFILES = {
+    "PYTHON_PYTEST",
+    "MAVEN_SYSTEM",
+    "MAVEN_WRAPPER",
+}
+
+
+def command_to_text(command):
+    if not command:
+        return ""
+
+    if isinstance(command, (list, tuple)):
+        return " ".join(str(item) for item in command)
+
+    return str(command)
 
 
 def classify_execution_failure(stderr_text, stdout_text=None, command=None):
     stderr_lower = (stderr_text or "").lower()
     stdout_lower = (stdout_text or "").lower()
     output_lower = f"{stdout_lower}\n{stderr_lower}"
-    command_lower = (command or "").lower()
+    command_lower = command_to_text(command).lower()
 
-    if "mvn" in stderr_lower and "not recognized" in stderr_lower:
+    if (
+        "mvnw.cmd" in command_lower
+        and (
+            "not recognized" in output_lower
+            or "cannot find" in output_lower
+            or "no such file" in output_lower
+        )
+    ):
+        return {
+            "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
+            "help_message": (
+                "The Maven Wrapper command was selected, but mvnw.cmd was not found or could not run. "
+                "Check that mvnw.cmd exists in the project root."
+            ),
+        }
+
+    if (
+        "mvnw" in command_lower
+        and (
+            "permission denied" in output_lower
+            or "not executable" in output_lower
+        )
+    ):
+        return {
+            "failure_type": "MAVEN_WRAPPER_NOT_EXECUTABLE",
+            "help_message": (
+                "The Maven Wrapper exists but is not executable. "
+                "Run `chmod +x mvnw` and rerun Stitch QA."
+            ),
+        }
+
+    if (
+        "mvnw" in command_lower
+        and (
+            "not found" in output_lower
+            or "no such file" in output_lower
+            or "cannot find" in output_lower
+        )
+    ):
+        return {
+            "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
+            "help_message": (
+                "The Maven Wrapper command was selected, but the wrapper file was not found or could not run. "
+                "Check that the correct mvnw or mvnw.cmd file exists in the project root."
+            ),
+        }
+
+    if (
+        "mvn" in command_lower
+        and (
+            "not recognized" in output_lower
+            or "command not found" in output_lower
+            or "no such file" in output_lower
+            or "cannot find" in output_lower
+        )
+    ):
         return {
             "failure_type": "MAVEN_NOT_AVAILABLE",
             "help_message": (
                 "Maven is not installed or not available in PATH. "
                 "Install Apache Maven and add it to PATH, or add Maven Wrapper files "
                 "(mvnw, mvnw.cmd, .mvn/wrapper) to this project."
-            ),
-        }
-
-    if "mvnw.cmd" in stderr_lower and "not recognized" in stderr_lower:
-        return {
-            "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
-            "help_message": (
-                "Maven Wrapper command was selected, but mvnw.cmd was not found or could not run. "
-                "Check that mvnw.cmd exists in the project root."
             ),
         }
 
@@ -34,13 +102,15 @@ def classify_execution_failure(stderr_text, stdout_text=None, command=None):
             or "python is not recognized" in output_lower
             or "python' is not recognized" in output_lower
             or "no python at" in output_lower
+            or "no such file" in output_lower
+            or "cannot find" in output_lower
         )
     ):
         return {
             "failure_type": "PYTHON_NOT_AVAILABLE",
             "help_message": (
-                "Python is not installed or not available in PATH. "
-                "Install Python and add it to PATH, then rerun Stitch QA."
+                "Python is not available to the Stitch QA process. "
+                "Run Stitch QA from a valid Python environment and retry."
             ),
         }
 
@@ -81,7 +151,8 @@ def classify_execution_failure(stderr_text, stdout_text=None, command=None):
         return {
             "failure_type": "COMMAND_TIMEOUT",
             "help_message": (
-                "The command took too long to finish. Increase the timeout or check whether the build is stuck."
+                "The command took too long to finish. "
+                "Review the build for hangs or long-running operations before increasing the timeout."
             ),
         }
 
@@ -112,6 +183,14 @@ def build_result(
     executed=True,
     skipped=False,
     skip_reason=None,
+    command_profile=None,
+    command_args=None,
+    executable=None,
+    validation_status="VALIDATED",
+    validation_error=None,
+    timeout_seconds=None,
+    failure_type=None,
+    help_message=None,
 ):
     if skipped:
         failure_info = {
@@ -120,8 +199,15 @@ def build_result(
         }
         enhanced_stderr = stderr
         status = "SKIPPED"
+    elif failure_type or help_message:
+        failure_info = {
+            "failure_type": failure_type,
+            "help_message": help_message,
+        }
+        enhanced_stderr = build_stderr_with_help(stderr, failure_info)
+        status = "PASSED" if success else "FAILED"
     else:
-        failure_info = classify_execution_failure(stderr, stdout, command)
+        failure_info = classify_execution_failure(stderr, stdout, command_args or command)
         enhanced_stderr = build_stderr_with_help(stderr, failure_info)
         status = "PASSED" if success else "FAILED"
 
@@ -135,12 +221,24 @@ def build_result(
         "stdout": stdout,
         "stderr": enhanced_stderr,
         "command": command,
+        "command_profile": command_profile,
+        "execution_policy": EXECUTION_POLICY,
+        "execution_strategy": EXECUTION_STRATEGY,
+        "shell_enabled": False,
+        "command_args": list(command_args or []),
+        "executable": executable,
+        "validation_status": validation_status,
+        "validation_error": validation_error,
+        "timeout_seconds": timeout_seconds,
         "failure_type": failure_info.get("failure_type"),
         "help_message": failure_info.get("help_message"),
     }
 
 
-def build_skipped_result(command, skip_reason):
+def build_skipped_result(command, skip_reason, command_profile=None):
+    validation_status = "PROFILE_VALIDATED_NOT_EXECUTED" if command_profile else "NOT_AVAILABLE"
+    validation_error = None if command_profile else "No built-in execution profile was available."
+
     return build_result(
         success=True,
         exit_code=0,
@@ -150,26 +248,226 @@ def build_skipped_result(command, skip_reason):
         executed=False,
         skipped=True,
         skip_reason=skip_reason,
+        command_profile=command_profile,
+        validation_status=validation_status,
+        validation_error=validation_error,
     )
 
 
-def execute_command(project_path, command, timeout_seconds=120):
-    if not command:
+def build_rejected_result(command, command_profile, validation_error):
+    return build_result(
+        success=False,
+        exit_code=None,
+        stdout="",
+        stderr=validation_error,
+        command=command,
+        command_profile=command_profile,
+        validation_status="REJECTED",
+        validation_error=validation_error,
+        failure_type="COMMAND_PROFILE_NOT_ALLOWED",
+        help_message=(
+            "Stitch QA only executes built-in validated command profiles. "
+            "Custom or unrecognized commands are not allowed."
+        ),
+    )
+
+
+def resolve_python_plan():
+    executable = sys.executable
+
+    if not executable:
+        return {
+            "success": False,
+            "failure_type": "PYTHON_NOT_AVAILABLE",
+            "help_message": (
+                "The active Stitch QA process could not resolve its Python interpreter."
+            ),
+        }
+
+    executable_path = Path(executable).resolve()
+
+    if not executable_path.is_file():
+        return {
+            "success": False,
+            "failure_type": "PYTHON_NOT_AVAILABLE",
+            "help_message": (
+                "The active Stitch QA Python interpreter path is not available."
+            ),
+        }
+
+    return {
+        "success": True,
+        "command": "python -m pytest",
+        "command_args": [str(executable_path), "-m", "pytest"],
+        "executable": str(executable_path),
+    }
+
+
+def resolve_maven_system_plan():
+    executable = shutil.which("mvn")
+
+    if not executable:
+        return {
+            "success": False,
+            "failure_type": "MAVEN_NOT_AVAILABLE",
+            "help_message": (
+                "Maven is not installed or not available in PATH. "
+                "Install Apache Maven and add it to PATH, or add Maven Wrapper files "
+                "(mvnw, mvnw.cmd, .mvn/wrapper) to this project."
+            ),
+        }
+
+    executable_path = Path(executable).resolve()
+
+    return {
+        "success": True,
+        "command": "mvn test",
+        "command_args": [str(executable_path), "test"],
+        "executable": str(executable_path),
+    }
+
+
+def resolve_maven_wrapper_plan(project_path):
+    current_os = platform.system()
+
+    if current_os == "Windows":
+        wrapper_path = (project_path / "mvnw.cmd").resolve()
+        command = ".\\mvnw.cmd test"
+    else:
+        wrapper_path = (project_path / "mvnw").resolve()
+        command = "./mvnw test"
+
+    try:
+        wrapper_path.relative_to(project_path)
+    except ValueError:
+        return {
+            "success": False,
+            "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
+            "help_message": "The resolved Maven Wrapper path is outside the project directory.",
+        }
+
+    if not wrapper_path.is_file():
+        return {
+            "success": False,
+            "failure_type": "MAVEN_WRAPPER_NOT_AVAILABLE",
+            "help_message": (
+                f"The required Maven Wrapper file for {current_os} was not found in the project root."
+            ),
+        }
+
+    if current_os != "Windows" and not os.access(wrapper_path, os.X_OK):
+        return {
+            "success": False,
+            "failure_type": "MAVEN_WRAPPER_NOT_EXECUTABLE",
+            "help_message": (
+                "The Maven Wrapper exists but is not executable. "
+                "Run `chmod +x mvnw` and rerun Stitch QA."
+            ),
+        }
+
+    return {
+        "success": True,
+        "command": command,
+        "command_args": [str(wrapper_path), "test"],
+        "executable": str(wrapper_path),
+    }
+
+
+def resolve_execution_plan(project_path, command_profile):
+    if command_profile not in SUPPORTED_EXECUTION_PROFILES:
+        return {
+            "success": False,
+            "failure_type": "COMMAND_PROFILE_NOT_ALLOWED",
+            "help_message": (
+                "Stitch QA only executes built-in validated command profiles. "
+                "Custom or unrecognized commands are not allowed."
+            ),
+        }
+
+    if command_profile == "PYTHON_PYTEST":
+        return resolve_python_plan()
+
+    if command_profile == "MAVEN_SYSTEM":
+        return resolve_maven_system_plan()
+
+    return resolve_maven_wrapper_plan(project_path)
+
+
+def execute_command(
+    project_path,
+    command_profile,
+    display_command=None,
+    timeout_seconds=120,
+):
+    working_dir = Path(project_path).resolve()
+
+    if not working_dir.exists():
         return build_result(
             success=False,
             exit_code=None,
             stdout="",
-            stderr="No command provided for execution.",
-            command=command,
+            stderr=f"Project path does not exist: {working_dir}",
+            command=display_command,
+            command_profile=command_profile,
+            validation_status="REJECTED",
+            validation_error="Project path does not exist.",
+            timeout_seconds=timeout_seconds,
+            failure_type="INVALID_PROJECT_PATH",
+            help_message="Provide an existing project directory and rerun Stitch QA.",
         )
 
-    working_dir = Path(project_path).resolve()
+    if not working_dir.is_dir():
+        return build_result(
+            success=False,
+            exit_code=None,
+            stdout="",
+            stderr=f"Project path is not a directory: {working_dir}",
+            command=display_command,
+            command_profile=command_profile,
+            validation_status="REJECTED",
+            validation_error="Project path is not a directory.",
+            timeout_seconds=timeout_seconds,
+            failure_type="INVALID_PROJECT_PATH",
+            help_message="Provide a project directory and rerun Stitch QA.",
+        )
+
+    if command_profile not in SUPPORTED_EXECUTION_PROFILES:
+        return build_rejected_result(
+            display_command,
+            command_profile,
+            "The requested execution profile is not in the Stitch QA allowlist.",
+        )
+
+    execution_plan = resolve_execution_plan(working_dir, command_profile)
+
+    if not execution_plan.get("success"):
+        failure_type = execution_plan.get("failure_type")
+        help_message = execution_plan.get("help_message")
+        command = display_command
+
+        return build_result(
+            success=False,
+            exit_code=None,
+            stdout="",
+            stderr=help_message or "Unable to resolve the built-in execution command.",
+            command=command,
+            command_profile=command_profile,
+            validation_status="VALIDATED",
+            validation_error=None,
+            timeout_seconds=timeout_seconds,
+            failure_type=failure_type,
+            help_message=help_message,
+        )
+
+    command = display_command or execution_plan["command"]
+    command_args = execution_plan["command_args"]
+    executable = execution_plan["executable"]
 
     try:
         completed_process = subprocess.run(
-            command,
+            command_args,
             cwd=working_dir,
-            shell=True,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -181,6 +479,11 @@ def execute_command(project_path, command, timeout_seconds=120):
             stdout=completed_process.stdout,
             stderr=completed_process.stderr,
             command=command,
+            command_profile=command_profile,
+            command_args=command_args,
+            executable=executable,
+            validation_status="VALIDATED",
+            timeout_seconds=timeout_seconds,
         )
 
     except subprocess.TimeoutExpired as error:
@@ -202,6 +505,30 @@ def execute_command(project_path, command, timeout_seconds=120):
             stdout=stdout_text,
             stderr=stderr_text,
             command=command,
+            command_profile=command_profile,
+            command_args=command_args,
+            executable=executable,
+            validation_status="VALIDATED",
+            timeout_seconds=timeout_seconds,
+            failure_type="COMMAND_TIMEOUT",
+            help_message=(
+                "The command took too long to finish. "
+                "Review the build for hangs or long-running operations before increasing the timeout."
+            ),
+        )
+
+    except OSError as error:
+        return build_result(
+            success=False,
+            exit_code=None,
+            stdout="",
+            stderr=str(error),
+            command=command,
+            command_profile=command_profile,
+            command_args=command_args,
+            executable=executable,
+            validation_status="VALIDATED",
+            timeout_seconds=timeout_seconds,
         )
 
     except Exception as error:
@@ -211,4 +538,11 @@ def execute_command(project_path, command, timeout_seconds=120):
             stdout="",
             stderr=str(error),
             command=command,
+            command_profile=command_profile,
+            command_args=command_args,
+            executable=executable,
+            validation_status="VALIDATED",
+            timeout_seconds=timeout_seconds,
+            failure_type="EXECUTION_ERROR",
+            help_message="The validated test command could not be completed.",
         )
