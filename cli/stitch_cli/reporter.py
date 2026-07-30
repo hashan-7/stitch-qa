@@ -2,6 +2,20 @@ from pathlib import Path
 from datetime import datetime
 import json
 
+RISK_ORDER = {
+    "UNKNOWN": -1,
+    "NONE": 0,
+    "INFO": 1,
+    "LOW": 2,
+    "MEDIUM": 3,
+    "HIGH": 4,
+    "CRITICAL": 5,
+}
+
+FAILED_STATUSES = {"FAIL", "FAILED", "ERROR", "BLOCK_RELEASE"}
+UNAVAILABLE_STATUSES = {"UNAVAILABLE", "NOT_AVAILABLE", "ERROR"}
+SOURCE_COMPLETE_STATUSES = {"COMPLETED", "PARTIAL"}
+
 
 def format_list(items):
     if not items:
@@ -31,21 +45,29 @@ def safe_value(value, default=None):
     return value
 
 
-def build_status_label(execution_result, agent_data=None, source_review_data=None):
-    if agent_data and agent_data.get("final_status"):
-        return agent_data.get("final_status")
+def normalize_status(value, default="NOT_AVAILABLE"):
+    if value is None or value == "":
+        return default
 
-    if execution_result.get("skipped"):
-        source_status = str(
-            source_review_data.get("status") if source_review_data else ""
-        ).upper()
+    return str(value).strip().upper()
 
-        if source_status in {"COMPLETED", "PARTIAL"}:
-            return "REVIEW_COMPLETED_WITHOUT_TESTS"
 
-        return "QA_INCOMPLETE"
+def normalize_risk(value):
+    normalized = normalize_status(value, "UNKNOWN")
+    return normalized if normalized in RISK_ORDER else "UNKNOWN"
 
-    return "PASS" if execution_result.get("success") else "FAIL"
+
+def highest_risk(*risk_values):
+    normalized = [normalize_risk(value) for value in risk_values]
+    return max(normalized, key=lambda value: RISK_ORDER[value], default="UNKNOWN")
+
+
+def is_failed_status(value):
+    return normalize_status(value) in FAILED_STATUSES
+
+
+def is_unavailable_status(value):
+    return normalize_status(value) in UNAVAILABLE_STATUSES
 
 
 def build_execution_status(execution_result):
@@ -60,20 +82,11 @@ def build_execution_status(execution_result):
 
 def build_execution_summary(project_type, execution_result, source_review_data=None):
     command = safe_value(execution_result.get("command"), "Not available")
-    command_profile = safe_value(
-        execution_result.get("command_profile"),
-        "Not available",
-    )
-    execution_strategy = safe_value(
-        execution_result.get("execution_strategy"),
-        "Not available",
-    )
+    command_profile = safe_value(execution_result.get("command_profile"), "Not available")
+    execution_strategy = safe_value(execution_result.get("execution_strategy"), "Not available")
 
     if execution_result.get("skipped"):
-        reason = safe_value(
-            execution_result.get("skip_reason"),
-            "Test execution was not required.",
-        )
+        reason = safe_value(execution_result.get("skip_reason"), "Test execution was not required.")
         source_status = safe_value(
             source_review_data.get("status") if source_review_data else None,
             "NOT_RUN",
@@ -89,8 +102,7 @@ def build_execution_summary(project_type, execution_result, source_review_data=N
     return (
         f"The {project_type} was scanned and executed using the built-in profile "
         f"`{command_profile}` with the `{execution_strategy}` strategy. "
-        f"The command `{command}` {outcome} with exit code "
-        f"{execution_result.get('exit_code')}."
+        f"The command `{command}` {outcome} with exit code {execution_result.get('exit_code')}."
     )
 
 
@@ -167,12 +179,8 @@ def build_source_discovery_json(source_review):
         "source_files_count": int(source_review.get("source_files_count", 0)),
         "source_files": format_list(source_review.get("source_files", [])),
         "file_extensions": format_list(source_review.get("file_extensions", [])),
-        "excluded_test_files_count": int(
-            source_review.get("excluded_test_files_count", 0)
-        ),
-        "excluded_sensitive_files_count": int(
-            source_review.get("excluded_sensitive_files_count", 0)
-        ),
+        "excluded_test_files_count": int(source_review.get("excluded_test_files_count", 0)),
+        "excluded_sensitive_files_count": int(source_review.get("excluded_sensitive_files_count", 0)),
         "unreadable_files_count": int(source_review.get("unreadable_files_count", 0)),
         "warning": source_review.get("warning"),
     }
@@ -216,6 +224,248 @@ def build_source_review_json(source_review_data):
         "verification": source_review_data.get("verification"),
         "llm_error": source_review_data.get("llm_error"),
         "coverage": source_review_data.get("coverage", {}),
+    }
+
+
+def build_log_agent_json(agent_data):
+    return {
+        "agent": safe_value(agent_data.get("agent") if agent_data else None),
+        "mode": safe_value(agent_data.get("mode") if agent_data else None),
+        "final_status": safe_value(agent_data.get("final_status") if agent_data else None),
+        "summary": safe_value(agent_data.get("summary") if agent_data else None),
+        "root_cause": safe_value(agent_data.get("root_cause") if agent_data else None),
+        "recommendation": safe_value(agent_data.get("recommendation") if agent_data else None),
+        "issues": format_list(agent_data.get("issues") if agent_data else []),
+        "warnings": format_list(agent_data.get("warnings") if agent_data else []),
+        "llm_error": safe_value(agent_data.get("llm_error") if agent_data else None),
+    }
+
+
+def build_repair_agent_json(repair_data):
+    return {
+        "agent": safe_value(repair_data.get("agent") if repair_data else None),
+        "mode": safe_value(repair_data.get("mode") if repair_data else None),
+        "status": safe_value(repair_data.get("status") if repair_data else None),
+        "risk_level": safe_value(repair_data.get("risk_level") if repair_data else None),
+        "auto_apply": safe_value(repair_data.get("auto_apply") if repair_data else None),
+        "summary": safe_value(repair_data.get("summary") if repair_data else None),
+        "suggestions": format_list(repair_data.get("suggestions") if repair_data else []),
+        "next_action": safe_value(repair_data.get("next_action") if repair_data else None),
+        "warnings": format_list(repair_data.get("warnings") if repair_data else []),
+        "llm_error": safe_value(repair_data.get("llm_error") if repair_data else None),
+    }
+
+
+def build_code_agent_json(code_data):
+    return {
+        "agent": safe_value(code_data.get("agent") if code_data else None),
+        "mode": safe_value(code_data.get("mode") if code_data else None),
+        "status": safe_value(code_data.get("status") if code_data else None),
+        "risk_level": safe_value(code_data.get("risk_level") if code_data else None),
+        "auto_apply": safe_value(code_data.get("auto_apply") if code_data else None),
+        "summary": safe_value(code_data.get("summary") if code_data else None),
+        "suggested_patch": safe_value(code_data.get("suggested_patch") if code_data else None),
+        "verification": safe_value(code_data.get("verification") if code_data else None),
+        "warnings": format_list(code_data.get("warnings") if code_data else []),
+        "llm_error": safe_value(code_data.get("llm_error") if code_data else None),
+    }
+
+
+def build_agent_workflow_status(
+    execution_result,
+    source_review_data=None,
+    agent_data=None,
+    repair_data=None,
+    code_data=None,
+    workflow_context=None,
+):
+    workflow_context = workflow_context or {}
+    tests_executed = bool(execution_result.get("executed"))
+
+    if workflow_context.get("analyze_requested"):
+        log_status = normalize_status(
+            agent_data.get("final_status") if agent_data else None,
+            "UNAVAILABLE" if tests_executed else "NOT_RUN",
+        )
+    else:
+        log_status = "NOT_REQUESTED"
+
+    if workflow_context.get("repair_requested"):
+        repair_status = normalize_status(
+            repair_data.get("status") if repair_data else None,
+            "UNAVAILABLE" if tests_executed else "NOT_RUN",
+        )
+    else:
+        repair_status = "NOT_REQUESTED"
+
+    if workflow_context.get("code_fix_requested"):
+        code_status = normalize_status(
+            code_data.get("status") if code_data else None,
+            "UNAVAILABLE" if tests_executed else "NOT_RUN",
+        )
+    else:
+        code_status = "NOT_REQUESTED"
+
+    return {
+        "source_review": normalize_status(
+            source_review_data.get("status") if source_review_data else None,
+            "NOT_RUN",
+        ),
+        "test_execution": normalize_status(build_execution_status(execution_result)),
+        "log_analysis": log_status,
+        "repair_guidance": repair_status,
+        "code_repair_guidance": code_status,
+    }
+
+
+def build_qa_decision(
+    execution_result,
+    source_review_data=None,
+    agent_data=None,
+    repair_data=None,
+    code_data=None,
+    workflow_context=None,
+):
+    workflow_context = workflow_context or {}
+    workflow_status = build_agent_workflow_status(
+        execution_result,
+        source_review_data,
+        agent_data,
+        repair_data,
+        code_data,
+        workflow_context,
+    )
+    source_status = workflow_status["source_review"]
+    source_review_data = source_review_data or {}
+    source_coverage = source_review_data.get("coverage", {})
+    discovered_source_files = int(source_coverage.get("discovered_files_count", 0))
+    source_available = source_status in SOURCE_COMPLETE_STATUSES
+    no_source_files = source_status == "NO_SOURCE_FILES"
+    source_unavailable = source_status == "UNAVAILABLE" and discovered_source_files > 0
+    tests_executed = bool(execution_result.get("executed"))
+    tests_skipped = bool(execution_result.get("skipped"))
+    execution_failed = tests_executed and not bool(execution_result.get("success"))
+    execution_passed = tests_executed and bool(execution_result.get("success"))
+    log_status = workflow_status["log_analysis"]
+    repair_status = workflow_status["repair_guidance"]
+    code_status = workflow_status["code_repair_guidance"]
+    requested_agent_unavailable = (
+        workflow_context.get("analyze_requested") and is_unavailable_status(log_status)
+    ) or (
+        workflow_context.get("repair_requested") and is_unavailable_status(repair_status)
+    ) or (
+        workflow_context.get("code_fix_requested") and is_unavailable_status(code_status)
+    )
+    log_failed = agent_data and is_failed_status(agent_data.get("final_status"))
+    source_risk = normalize_risk(source_review_data.get("risk_level"))
+    repair_risk = normalize_risk(repair_data.get("risk_level") if repair_data else None)
+    code_risk = normalize_risk(code_data.get("risk_level") if code_data else None)
+    execution_risk = "HIGH" if execution_failed else "NONE"
+    log_risk = "HIGH" if log_failed else "NONE"
+    combined_risk = highest_risk(
+        source_risk,
+        repair_risk,
+        code_risk,
+        execution_risk,
+        log_risk,
+    )
+    reasons = []
+
+    if source_available:
+        reasons.append(
+            f"Agent 3 source review completed with risk level {source_risk}."
+        )
+    elif no_source_files:
+        reasons.append("No eligible application source files were available for Agent 3 review.")
+    elif source_unavailable:
+        reasons.append("Agent 3 source review was unavailable for discovered application source files.")
+    else:
+        reasons.append(f"Agent 3 source review status was {source_status}.")
+
+    if tests_skipped:
+        reasons.append("Test execution was skipped because no compatible tests were detected.")
+    elif execution_passed:
+        reasons.append("The validated built-in test command completed successfully.")
+    elif execution_failed:
+        reasons.append(
+            f"The validated built-in test command failed with exit code {execution_result.get('exit_code')}."
+        )
+
+    if workflow_context.get("analyze_requested"):
+        reasons.append(f"Agent 1 runtime log analysis status was {log_status}.")
+
+    if workflow_context.get("repair_requested"):
+        reasons.append(f"Agent 2 repair guidance status was {repair_status}.")
+
+    if workflow_context.get("code_fix_requested"):
+        reasons.append(f"Agent 3 code-repair guidance status was {code_status}.")
+
+    source_release = normalize_status(
+        source_review_data.get("release_recommendation"),
+        "UNKNOWN",
+    )
+
+    if execution_failed:
+        status = "FAIL"
+        release_recommendation = "BLOCK_RELEASE"
+        ci_exit_code = 1
+    elif source_unavailable or requested_agent_unavailable:
+        status = "QA_INCOMPLETE"
+        release_recommendation = "QA_INCOMPLETE"
+        ci_exit_code = 1
+    elif source_release == "QA_INCOMPLETE":
+        status = "QA_INCOMPLETE"
+        release_recommendation = "QA_INCOMPLETE"
+        ci_exit_code = 1
+    elif source_release == "BLOCK_RELEASE" or RISK_ORDER[combined_risk] >= RISK_ORDER["HIGH"]:
+        status = "BLOCK_RELEASE"
+        release_recommendation = "BLOCK_RELEASE"
+        ci_exit_code = 1
+    elif tests_skipped:
+        if source_available:
+            status = "REVIEW_COMPLETED_WITHOUT_TESTS"
+            release_recommendation = "REVIEW_REQUIRED"
+            ci_exit_code = 0
+        else:
+            status = "QA_INCOMPLETE"
+            release_recommendation = "QA_INCOMPLETE"
+            ci_exit_code = 1
+    elif execution_passed and no_source_files:
+        status = "TESTS_PASSED_WITHOUT_SOURCE_REVIEW"
+        release_recommendation = "REVIEW_REQUIRED"
+        ci_exit_code = 0
+    elif RISK_ORDER[combined_risk] >= RISK_ORDER["MEDIUM"]:
+        status = "REVIEW_REQUIRED"
+        release_recommendation = "REVIEW_REQUIRED"
+        ci_exit_code = 0
+    elif RISK_ORDER[combined_risk] >= RISK_ORDER["LOW"]:
+        status = "PASS_WITH_WARNINGS"
+        release_recommendation = "ALLOW_WITH_WARNINGS"
+        ci_exit_code = 0
+    else:
+        status = "PASS"
+        release_recommendation = "READY_FOR_RELEASE"
+        ci_exit_code = 0
+
+    if source_status == "PARTIAL" or requested_agent_unavailable:
+        completeness = "PARTIAL"
+    elif tests_skipped and source_available:
+        completeness = "SOURCE_ONLY"
+    elif tests_executed and no_source_files:
+        completeness = "TEST_ONLY"
+    elif tests_executed and source_available:
+        completeness = "COMPLETE"
+    else:
+        completeness = "INCOMPLETE"
+
+    return {
+        "status": status,
+        "risk_level": combined_risk,
+        "release_recommendation": release_recommendation,
+        "completeness": completeness,
+        "ci_exit_code": ci_exit_code,
+        "reasons": reasons,
+        "workflow_status": workflow_status,
     }
 
 
@@ -290,6 +540,26 @@ def build_source_review_markdown(source_review_data):
     )
 
 
+def build_qa_decision_markdown(qa_decision):
+    workflow_status = qa_decision.get("workflow_status", {})
+    return (
+        "## Combined QA Decision\n\n"
+        f"- Final QA Status: **{qa_decision.get('status')}**\n"
+        f"- Combined Risk Level: **{qa_decision.get('risk_level')}**\n"
+        f"- Release Recommendation: **{qa_decision.get('release_recommendation')}**\n"
+        f"- QA Evidence Completeness: **{qa_decision.get('completeness')}**\n"
+        f"- CI Exit Code: {qa_decision.get('ci_exit_code')}\n\n"
+        "### Agent Workflow Status\n\n"
+        f"- Agent 3 Source Review: {workflow_status.get('source_review', 'NOT_RUN')}\n"
+        f"- Test Execution: {workflow_status.get('test_execution', 'NOT_RUN')}\n"
+        f"- Agent 1 Log Analysis: {workflow_status.get('log_analysis', 'NOT_REQUESTED')}\n"
+        f"- Agent 2 Repair Guidance: {workflow_status.get('repair_guidance', 'NOT_REQUESTED')}\n"
+        f"- Agent 3 Code Repair Guidance: {workflow_status.get('code_repair_guidance', 'NOT_REQUESTED')}\n\n"
+        "### Decision Reasons\n\n"
+        f"{format_markdown_list(qa_decision.get('reasons', []))}\n\n"
+    )
+
+
 def generate_report(
     scan_result,
     execution_result,
@@ -297,6 +567,8 @@ def generate_report(
     repair_data=None,
     code_data=None,
     source_review_data=None,
+    qa_decision=None,
+    workflow_context=None,
 ):
     project_path = Path(scan_result["project_path"])
     project_type = scan_result.get("project_type", "Unknown")
@@ -346,12 +618,16 @@ Generated At: {generated_at}
 
         return md_report_path
 
-    project_recommendations = scan_result.get("project_recommendations", [])
-    final_status = build_status_label(
+    qa_decision = qa_decision or build_qa_decision(
         execution_result,
-        agent_data,
         source_review_data,
+        agent_data,
+        repair_data,
+        code_data,
+        workflow_context,
     )
+    final_status = qa_decision["status"]
+    project_recommendations = scan_result.get("project_recommendations", [])
     execution_status = build_execution_status(execution_result)
     execution_summary = build_execution_summary(
         project_type,
@@ -361,6 +637,9 @@ Generated At: {generated_at}
     stdout_text = execution_result.get("stdout", "")[-2000:]
     stderr_text = execution_result.get("stderr", "")[-2000:]
     source_review_json = build_source_review_json(source_review_data)
+    log_agent_json = build_log_agent_json(agent_data)
+    repair_agent_json = build_repair_agent_json(repair_data)
+    code_agent_json = build_code_agent_json(code_data)
 
     json_content = {
         "project": {
@@ -394,37 +673,10 @@ Generated At: {generated_at}
             "failure_type": execution_result.get("failure_type"),
             "help_message": execution_result.get("help_message"),
         },
-        "log_agent": {
-            "agent": safe_value(agent_data.get("agent") if agent_data else None),
-            "mode": safe_value(agent_data.get("mode") if agent_data else None),
-            "final_status": safe_value(agent_data.get("final_status") if agent_data else None),
-            "summary": safe_value(agent_data.get("summary") if agent_data else None),
-            "root_cause": safe_value(agent_data.get("root_cause") if agent_data else None),
-            "recommendation": safe_value(agent_data.get("recommendation") if agent_data else None),
-            "issues": format_list(agent_data.get("issues") if agent_data else []),
-            "warnings": format_list(agent_data.get("warnings") if agent_data else []),
-            "llm_error": safe_value(agent_data.get("llm_error") if agent_data else None),
-        },
-        "repair_agent": {
-            "agent": safe_value(repair_data.get("agent") if repair_data else None),
-            "mode": safe_value(repair_data.get("mode") if repair_data else None),
-            "risk_level": safe_value(repair_data.get("risk_level") if repair_data else None),
-            "auto_apply": safe_value(repair_data.get("auto_apply") if repair_data else None),
-            "summary": safe_value(repair_data.get("summary") if repair_data else None),
-            "suggestions": format_list(repair_data.get("suggestions") if repair_data else []),
-            "next_action": safe_value(repair_data.get("next_action") if repair_data else None),
-            "llm_error": safe_value(repair_data.get("llm_error") if repair_data else None),
-        },
-        "code_agent_repair": {
-            "agent": safe_value(code_data.get("agent") if code_data else None),
-            "mode": safe_value(code_data.get("mode") if code_data else None),
-            "risk_level": safe_value(code_data.get("risk_level") if code_data else None),
-            "auto_apply": safe_value(code_data.get("auto_apply") if code_data else None),
-            "summary": safe_value(code_data.get("summary") if code_data else None),
-            "suggested_patch": safe_value(code_data.get("suggested_patch") if code_data else None),
-            "verification": safe_value(code_data.get("verification") if code_data else None),
-            "llm_error": safe_value(code_data.get("llm_error") if code_data else None),
-        },
+        "log_agent": log_agent_json,
+        "repair_agent": repair_agent_json,
+        "code_agent_repair": code_agent_json,
+        "qa_decision": qa_decision,
         "evidence": {
             "stdout": stdout_text,
             "stderr": stderr_text,
@@ -438,43 +690,27 @@ Generated At: {generated_at}
         encoding="utf-8",
     )
 
-    log_issues = format_markdown_list(agent_data.get("issues") if agent_data else [])
-    log_warnings = format_markdown_list(agent_data.get("warnings") if agent_data else [])
-    repair_suggestions = format_markdown_list(repair_data.get("suggestions") if repair_data else [])
+    log_issues = format_markdown_list(log_agent_json["issues"])
+    log_warnings = format_markdown_list(log_agent_json["warnings"])
+    repair_suggestions = format_markdown_list(repair_agent_json["suggestions"])
+    repair_warnings = format_markdown_list(repair_agent_json["warnings"])
     project_recommendations_text = format_markdown_list(project_recommendations)
     static_mapping_text = build_static_mapping_markdown(static_map)
     detected_test_files_text = format_markdown_list(static_map.get("test_files", []))
     command_text = safe_value(execution_result.get("command"), "Not available")
-    command_profile_text = safe_value(
-        execution_result.get("command_profile"),
-        "Not available",
-    )
-    execution_policy_text = safe_value(
-        execution_result.get("execution_policy"),
-        "Not available",
-    )
-    execution_strategy_text = safe_value(
-        execution_result.get("execution_strategy"),
-        "Not available",
-    )
+    command_profile_text = safe_value(execution_result.get("command_profile"), "Not available")
+    execution_policy_text = safe_value(execution_result.get("execution_policy"), "Not available")
+    execution_strategy_text = safe_value(execution_result.get("execution_strategy"), "Not available")
     command_args_text = format_inline_list(
         execution_result.get("command_args", []),
-        "None",
+        "Not resolved because execution was skipped",
     )
-    executable_text = safe_value(
-        execution_result.get("executable"),
-        "Not available",
-    )
-    validation_status_text = safe_value(
-        execution_result.get("validation_status"),
-        "Not available",
-    )
-    validation_error_text = safe_value(
-        execution_result.get("validation_error"),
-        "None",
-    )
+    executable_text = safe_value(execution_result.get("executable"), "Not available")
+    validation_status_text = safe_value(execution_result.get("validation_status"), "Not available")
+    validation_error_text = safe_value(execution_result.get("validation_error"), "None")
     skip_reason_text = safe_value(execution_result.get("skip_reason"), "None")
     source_review_section = build_source_review_markdown(source_review_data)
+    qa_decision_section = build_qa_decision_markdown(qa_decision)
 
     if execution_result.get("skipped"):
         evidence_section = (
@@ -497,22 +733,29 @@ Generated At: {generated_at}
     if code_data:
         code_section = (
             "## Agent 3 Code Repair Guidance\n\n"
-            f"- Agent: {safe_value(code_data.get('agent'), 'Not available')}\n"
-            f"- Mode: {safe_value(code_data.get('mode'), 'Not available')}\n"
-            f"- Risk Level: {safe_value(code_data.get('risk_level'), 'Not available')}\n"
-            f"- Auto Apply: {safe_value(code_data.get('auto_apply'), 'Not available')}\n\n"
+            f"- Agent: {safe_value(code_agent_json.get('agent'), 'Not available')}\n"
+            f"- Mode: {safe_value(code_agent_json.get('mode'), 'Not available')}\n"
+            f"- Status: {safe_value(code_agent_json.get('status'), 'Not available')}\n"
+            f"- Risk Level: {safe_value(code_agent_json.get('risk_level'), 'Not available')}\n"
+            f"- Auto Apply: {safe_value(code_agent_json.get('auto_apply'), 'Not available')}\n\n"
             "### Summary\n\n"
-            f"{safe_value(code_data.get('summary'), 'Not available')}\n\n"
+            f"{safe_value(code_agent_json.get('summary'), 'Not available')}\n\n"
             "### Suggested Patch\n\n"
-            f"{safe_value(code_data.get('suggested_patch'), 'No direct patch generated. Manual review required.')}\n\n"
+            f"{safe_value(code_agent_json.get('suggested_patch'), 'No direct patch generated. Manual review required.')}\n\n"
             "### Verification\n\n"
-            f"{safe_value(code_data.get('verification'), 'Rerun Stitch QA after applying any manual changes.')}\n\n"
+            f"{safe_value(code_agent_json.get('verification'), 'Rerun Stitch QA after applying any manual changes.')}\n\n"
         )
 
-        if code_data.get("llm_error"):
+        if code_agent_json.get("warnings"):
+            code_section += (
+                "### Warnings\n\n"
+                f"{format_markdown_list(code_agent_json.get('warnings'))}\n\n"
+            )
+
+        if code_agent_json.get("llm_error"):
             code_section += (
                 "### Code Agent LLM Error\n\n"
-                f"{code_data.get('llm_error')}\n\n"
+                f"{code_agent_json.get('llm_error')}\n\n"
             )
     else:
         code_section = (
@@ -524,10 +767,13 @@ Generated At: {generated_at}
         "# Stitch QA Report\n\n"
         "## Executive Summary\n\n"
         f"- Final QA Status: **{final_status}**\n"
+        f"- Combined Risk Level: **{qa_decision.get('risk_level')}**\n"
+        f"- Combined Release Recommendation: **{qa_decision.get('release_recommendation')}**\n"
+        f"- QA Evidence Completeness: **{qa_decision.get('completeness')}**\n"
+        f"- CI Exit Code: {qa_decision.get('ci_exit_code')}\n"
         f"- Project Type: {scan_result['project_type']}\n"
         f"- Source Review Status: **{source_review_json.get('status')}**\n"
         f"- Source Risk Level: **{source_review_json.get('risk_level')}**\n"
-        f"- Release Recommendation: **{source_review_json.get('release_recommendation')}**\n"
         f"- Tests Found: {'Yes' if static_map.get('has_tests') else 'No'}\n"
         f"- Test Files Count: {static_map.get('test_files_count', 0)}\n"
         f"- Execution Status: **{execution_status}**\n"
@@ -538,7 +784,8 @@ Generated At: {generated_at}
         f"- Test Command: `{command_text}`\n"
         f"- Exit Code: {execution_result.get('exit_code')}\n\n"
         f"{execution_summary}\n\n"
-        "## Project Summary\n\n"
+        + qa_decision_section
+        + "## Project Summary\n\n"
         f"- Project Path: {scan_result['project_path']}\n"
         f"- Project Type: {scan_result['project_type']}\n"
         f"- Total Files: {scan_result['total_files']}\n"
@@ -572,30 +819,33 @@ Generated At: {generated_at}
         f"- Failure Type: {safe_value(execution_result.get('failure_type'), 'None')}\n"
         f"- Help Message: {safe_value(execution_result.get('help_message'), 'None')}\n\n"
         "## Agent 1 Runtime Log Analysis\n\n"
-        f"- Agent: {safe_value(agent_data.get('agent') if agent_data else None, 'Not available')}\n"
-        f"- Mode: {safe_value(agent_data.get('mode') if agent_data else None, 'Not available')}\n"
-        f"- Final Status: {safe_value(agent_data.get('final_status') if agent_data else None, 'Not available')}\n\n"
+        f"- Agent: {safe_value(log_agent_json.get('agent'), 'Not available')}\n"
+        f"- Mode: {safe_value(log_agent_json.get('mode'), 'Not available')}\n"
+        f"- Final Status: {safe_value(log_agent_json.get('final_status'), 'Not requested')}\n\n"
         "### Summary\n\n"
-        f"{safe_value(agent_data.get('summary') if agent_data else None, 'Not available')}\n\n"
+        f"{safe_value(log_agent_json.get('summary'), 'Not requested')}\n\n"
         "### Root Cause\n\n"
-        f"{safe_value(agent_data.get('root_cause') if agent_data else None, 'Not available')}\n\n"
+        f"{safe_value(log_agent_json.get('root_cause'), 'Not available')}\n\n"
         "### Recommendation\n\n"
-        f"{safe_value(agent_data.get('recommendation') if agent_data else None, 'Not available')}\n\n"
+        f"{safe_value(log_agent_json.get('recommendation'), 'Not available')}\n\n"
         "### Issues\n\n"
         f"{log_issues}\n\n"
         "### Warnings\n\n"
         f"{log_warnings}\n\n"
         "## Agent 2 Repair Guidance\n\n"
-        f"- Agent: {safe_value(repair_data.get('agent') if repair_data else None, 'Not available')}\n"
-        f"- Mode: {safe_value(repair_data.get('mode') if repair_data else None, 'Not available')}\n"
-        f"- Risk Level: {safe_value(repair_data.get('risk_level') if repair_data else None, 'Not available')}\n"
-        f"- Auto Apply: {safe_value(repair_data.get('auto_apply') if repair_data else None, 'Not available')}\n\n"
+        f"- Agent: {safe_value(repair_agent_json.get('agent'), 'Not available')}\n"
+        f"- Mode: {safe_value(repair_agent_json.get('mode'), 'Not available')}\n"
+        f"- Status: {safe_value(repair_agent_json.get('status'), 'Not requested')}\n"
+        f"- Risk Level: {safe_value(repair_agent_json.get('risk_level'), 'Not available')}\n"
+        f"- Auto Apply: {safe_value(repair_agent_json.get('auto_apply'), 'Not available')}\n\n"
         "### Summary\n\n"
-        f"{safe_value(repair_data.get('summary') if repair_data else None, 'Not available')}\n\n"
+        f"{safe_value(repair_agent_json.get('summary'), 'Not requested')}\n\n"
         "### Suggestions\n\n"
         f"{repair_suggestions}\n\n"
         "### Next Action\n\n"
-        f"{safe_value(repair_data.get('next_action') if repair_data else None, 'Not available')}\n\n"
+        f"{safe_value(repair_agent_json.get('next_action'), 'Not available')}\n\n"
+        "### Warnings\n\n"
+        f"{repair_warnings}\n\n"
         + code_section
         + evidence_section
         + "## Final QA Status\n\n"
@@ -607,4 +857,3 @@ Generated At: {generated_at}
     md_report_path.write_text(md_content, encoding="utf-8")
 
     return md_report_path
-

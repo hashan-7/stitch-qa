@@ -5,7 +5,8 @@ description = "CLI tool for Stitch QA"
 dependencies = [
     "click",
     "rich",
-    "requests"
+    "requests",
+    "pytest"
 ]
 
 [project.scripts]

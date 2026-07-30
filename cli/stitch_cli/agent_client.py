@@ -10,6 +10,16 @@ MAX_SOURCE_FILE_CHARS = 50000
 MAX_SOURCE_REVIEW_CHARS = 300000
 
 
+def normalize_list(value):
+    if isinstance(value, list):
+        return value
+
+    if value is None:
+        return []
+
+    return [value]
+
+
 def get_failure_context(execution_result):
     return {
         "failure_type": execution_result.get("failure_type"),
@@ -178,7 +188,7 @@ def build_local_no_source_review(scan_result, collection):
         "status": "NO_SOURCE_FILES",
         "summary": warning,
         "risk_level": "UNKNOWN",
-        "release_recommendation": "QA_INCOMPLETE",
+        "release_recommendation": "REVIEW_REQUIRED",
         "reviewed_files_count": 0,
         "findings_count": 0,
         "severity_summary": {
@@ -191,8 +201,10 @@ def build_local_no_source_review(scan_result, collection):
         "category_summary": {},
         "findings": [],
         "warnings": [warning],
-        "limitations": ["Source-code QA review could not run because no eligible application source files were available."],
-        "verification": "Confirm the project path and supported source files, then rerun Stitch QA.",
+        "limitations": [
+            "Source-code QA review could not run because no eligible application source files were available."
+        ],
+        "verification": "Confirm whether the project intentionally contains tests only, then review the runtime evidence.",
         "llm_error": None,
         "coverage": collection,
     }
@@ -200,9 +212,9 @@ def build_local_no_source_review(scan_result, collection):
 
 def normalize_source_review_data(data, collection):
     normalized = dict(data)
-    normalized["findings"] = data.get("findings") if isinstance(data.get("findings"), list) else []
-    normalized["warnings"] = data.get("warnings") if isinstance(data.get("warnings"), list) else []
-    normalized["limitations"] = data.get("limitations") if isinstance(data.get("limitations"), list) else []
+    normalized["findings"] = normalize_list(data.get("findings"))
+    normalized["warnings"] = normalize_list(data.get("warnings"))
+    normalized["limitations"] = normalize_list(data.get("limitations"))
     normalized["severity_summary"] = (
         data.get("severity_summary")
         if isinstance(data.get("severity_summary"), dict)
@@ -285,6 +297,111 @@ def build_unavailable_source_review(scan_result, error):
     }
 
 
+def normalize_log_agent_data(data):
+    if not isinstance(data, dict):
+        return None
+
+    final_status = data.get("final_status")
+    if not final_status:
+        return None
+
+    return {
+        "agent": data.get("agent") or "log-agent",
+        "mode": data.get("mode") or "unknown",
+        "final_status": final_status,
+        "summary": data.get("summary"),
+        "root_cause": data.get("root_cause"),
+        "recommendation": data.get("recommendation"),
+        "issues": normalize_list(data.get("issues")),
+        "warnings": normalize_list(data.get("warnings")),
+        "llm_error": data.get("llm_error"),
+    }
+
+
+def build_unavailable_log_analysis(error):
+    return {
+        "agent": "log-agent",
+        "mode": "unavailable",
+        "final_status": "UNAVAILABLE",
+        "summary": "Runtime log analysis could not be completed because Agent 1 was unavailable.",
+        "root_cause": None,
+        "recommendation": "Check the Log Agent deployment and rerun the requested analysis.",
+        "issues": [],
+        "warnings": [str(error)],
+        "llm_error": None,
+    }
+
+
+def normalize_repair_agent_data(data):
+    if not isinstance(data, dict):
+        return None
+
+    if not data.get("summary") and not data.get("suggestions") and not data.get("next_action"):
+        return None
+
+    return {
+        "agent": data.get("agent") or "repair-agent",
+        "mode": data.get("mode") or "unknown",
+        "status": data.get("status") or "COMPLETED",
+        "risk_level": data.get("risk_level") or "UNKNOWN",
+        "auto_apply": bool(data.get("auto_apply", False)),
+        "summary": data.get("summary"),
+        "suggestions": normalize_list(data.get("suggestions")),
+        "next_action": data.get("next_action"),
+        "llm_error": data.get("llm_error"),
+    }
+
+
+def build_unavailable_repair_guidance(error):
+    return {
+        "agent": "repair-agent",
+        "mode": "unavailable",
+        "status": "UNAVAILABLE",
+        "risk_level": "UNKNOWN",
+        "auto_apply": False,
+        "summary": "Repair guidance could not be completed because Agent 2 was unavailable.",
+        "suggestions": [],
+        "next_action": "Check the Repair Agent deployment and rerun the requested guidance flow.",
+        "warnings": [str(error)],
+        "llm_error": None,
+    }
+
+
+def normalize_code_agent_data(data):
+    if not isinstance(data, dict):
+        return None
+
+    if not data.get("summary") and not data.get("suggested_patch") and not data.get("verification"):
+        return None
+
+    return {
+        "agent": data.get("agent") or "code-agent",
+        "mode": data.get("mode") or "unknown",
+        "status": data.get("status") or "COMPLETED",
+        "risk_level": data.get("risk_level") or "UNKNOWN",
+        "auto_apply": bool(data.get("auto_apply", False)),
+        "summary": data.get("summary"),
+        "suggested_patch": data.get("suggested_patch"),
+        "verification": data.get("verification"),
+        "llm_error": data.get("llm_error"),
+    }
+
+
+def build_unavailable_code_guidance(error):
+    return {
+        "agent": "code-agent",
+        "mode": "unavailable",
+        "status": "UNAVAILABLE",
+        "risk_level": "UNKNOWN",
+        "auto_apply": False,
+        "summary": "Code-level repair guidance could not be completed because Agent 3 was unavailable.",
+        "suggested_patch": None,
+        "verification": "Check the Code Agent deployment and rerun the requested code-guidance flow.",
+        "warnings": [str(error)],
+        "llm_error": None,
+    }
+
+
 def analyze_logs_with_agent(agent_url, scan_result, execution_result):
     failure_context = get_failure_context(execution_result)
 
@@ -306,9 +423,18 @@ def analyze_logs_with_agent(agent_url, scan_result, execution_result):
             timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
+        data = normalize_log_agent_data(response.json())
+
+        if data is None:
+            return {
+                "success": False,
+                "data": None,
+                "error": "Log agent returned an invalid analysis response.",
+            }
+
         return {
             "success": True,
-            "data": response.json(),
+            "data": data,
             "error": None,
         }
 
@@ -342,9 +468,18 @@ def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, a
             timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
+        data = normalize_repair_agent_data(response.json())
+
+        if data is None:
+            return {
+                "success": False,
+                "data": None,
+                "error": "Repair agent returned an invalid guidance response.",
+            }
+
         return {
             "success": True,
-            "data": response.json(),
+            "data": data,
             "error": None,
         }
 
@@ -392,4 +527,22 @@ def suggest_code_fix_with_agent(
         "exit_code": execution_result["exit_code"],
     }
 
-    return call_code_agent(payload, code_agent_url)
+    result = call_code_agent(payload, code_agent_url)
+
+    if not result.get("success"):
+        return result
+
+    data = normalize_code_agent_data(result.get("data"))
+
+    if data is None:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Code agent returned an invalid repair-guidance response.",
+        }
+
+    return {
+        "success": True,
+        "data": data,
+        "error": None,
+    }
