@@ -15,6 +15,9 @@ RISK_ORDER = {
 FAILED_STATUSES = {"FAIL", "FAILED", "ERROR", "BLOCK_RELEASE"}
 UNAVAILABLE_STATUSES = {"UNAVAILABLE", "NOT_AVAILABLE", "ERROR"}
 SOURCE_COMPLETE_STATUSES = {"COMPLETED", "PARTIAL"}
+REPORT_SCHEMA_VERSION = "2.1"
+TOOL_VERSION = "v2.1-development"
+SEVERITY_DISPLAY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"]
 
 
 def format_list(items):
@@ -476,88 +479,476 @@ def format_summary_mapping(mapping):
     return ", ".join(f"{key}: {value}" for key, value in mapping.items())
 
 
+def finding_line_sort_value(value):
+    if value is None or value == "":
+        return 0
+
+    try:
+        return int(str(value).split("-")[0].split(":")[0].strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_findings(findings):
+    normalized_findings = []
+
+    for finding in findings or []:
+        normalized_finding = dict(finding)
+        normalized_finding["severity"] = normalize_risk(finding.get("severity"))
+        normalized_findings.append(normalized_finding)
+
+    return sorted(
+        normalized_findings,
+        key=lambda finding: (
+            -RISK_ORDER.get(finding.get("severity", "UNKNOWN"), -1),
+            str(finding.get("file_path") or ""),
+            finding_line_sort_value(finding.get("line")),
+            str(finding.get("title") or ""),
+        ),
+    )
+
+
+def build_findings_summary(findings):
+    summary = {severity.lower(): 0 for severity in SEVERITY_DISPLAY_ORDER}
+
+    for finding in normalize_findings(findings):
+        severity = finding.get("severity", "UNKNOWN").lower()
+        summary[severity] = summary.get(severity, 0) + 1
+
+    summary["total"] = sum(
+        count for severity, count in summary.items() if severity != "total"
+    )
+    return summary
+
+
+def format_markdown_table(headers, rows):
+    if not rows:
+        return "No data available."
+
+    header_row = "| " + " | ".join(str(header) for header in headers) + " |"
+    separator_row = "| " + " | ".join("---" for _ in headers) + " |"
+    data_rows = [
+        "| "
+        + " | ".join(
+            str(value).replace("\n", " ").replace("|", "\\|")
+            for value in row
+        )
+        + " |"
+        for row in rows
+    ]
+    return "\n".join([header_row, separator_row, *data_rows])
+
+
 def format_source_findings(findings):
-    if not findings:
+    normalized_findings = normalize_findings(findings)
+
+    if not normalized_findings:
         return "No source-code findings were reported."
 
     sections = []
 
-    for finding in findings:
-        severity = safe_value(finding.get("severity"), "UNKNOWN")
-        title = safe_value(finding.get("title"), "Source-code finding")
-        file_path = safe_value(finding.get("file_path"), "Project-level")
-        line = finding.get("line")
-        location = f"{file_path}:{line}" if line else file_path
-        sections.append(
-            f"#### [{severity}] {title}\n\n"
-            f"- Finding ID: {safe_value(finding.get('id'), 'Not available')}\n"
-            f"- Location: `{location}`\n"
-            f"- Category: {safe_value(finding.get('category'), 'Not available')}\n"
-            f"- Confidence: {safe_value(finding.get('confidence'), 'Not available')}\n\n"
-            f"**Evidence:** {safe_value(finding.get('evidence'), 'Not available')}\n\n"
-            f"**Impact:** {safe_value(finding.get('impact'), 'Not available')}\n\n"
-            f"**Recommendation:** {safe_value(finding.get('recommendation'), 'Not available')}"
-        )
+    for severity in SEVERITY_DISPLAY_ORDER:
+        severity_findings = [
+            finding
+            for finding in normalized_findings
+            if finding.get("severity") == severity
+        ]
+
+        if not severity_findings:
+            continue
+
+        sections.append(f"#### {severity} Findings")
+
+        for finding in severity_findings:
+            title = safe_value(finding.get("title"), "Source-code finding")
+            file_path = safe_value(finding.get("file_path"), "Project-level")
+            line = finding.get("line")
+            location = f"{file_path}:{line}" if line else file_path
+            sections.append(
+                f"##### [{severity}] {title}\n\n"
+                f"- Finding ID: {safe_value(finding.get('id'), 'Not available')}\n"
+                f"- Location: `{location}`\n"
+                f"- Category: {safe_value(finding.get('category'), 'Not available')}\n"
+                f"- Confidence: {safe_value(finding.get('confidence'), 'Not available')}\n\n"
+                f"**Evidence**\n\n"
+                f"{safe_value(finding.get('evidence'), 'Not available')}\n\n"
+                f"**Potential Impact**\n\n"
+                f"{safe_value(finding.get('impact'), 'Not available')}\n\n"
+                f"**Recommended Action**\n\n"
+                f"{safe_value(finding.get('recommendation'), 'Not available')}"
+            )
 
     return "\n\n".join(sections)
 
 
+def build_scope_summary(
+    static_map,
+    source_discovery,
+    source_review_json,
+    execution_result,
+    qa_decision,
+):
+    workflow_status = qa_decision.get("workflow_status", {})
+    return {
+        "source_review_supported": bool(source_discovery.get("supported")),
+        "source_files_discovered": int(source_discovery.get("source_files_count", 0)),
+        "source_files_reviewed": int(source_review_json.get("reviewed_files_count", 0)),
+        "source_review_status": normalize_status(
+            source_review_json.get("status"),
+            "NOT_RUN",
+        ),
+        "tests_detected": bool(static_map.get("has_tests")),
+        "test_files_detected": int(static_map.get("test_files_count", 0)),
+        "test_framework": safe_value(static_map.get("test_framework")),
+        "test_execution_status": normalize_status(
+            build_execution_status(execution_result),
+            "NOT_RUN",
+        ),
+        "test_execution_performed": bool(execution_result.get("executed")),
+        "evidence_completeness": qa_decision.get("completeness"),
+        "workflow_status": workflow_status,
+    }
+
+
+def build_report_limitations(
+    static_map,
+    source_review_json,
+    execution_result,
+    qa_decision,
+    log_agent_json,
+    repair_agent_json,
+    code_agent_json,
+):
+    limitations = []
+    source_status = normalize_status(source_review_json.get("status"), "NOT_RUN")
+    workflow_status = qa_decision.get("workflow_status", {})
+
+    if source_status == "UNAVAILABLE":
+        limitations.append(
+            "Agent 3 source-code review was unavailable, so source-review evidence is incomplete."
+        )
+    elif source_status == "NO_SOURCE_FILES":
+        limitations.append(
+            "No eligible application source files were available for source-code review."
+        )
+    elif source_status == "PARTIAL":
+        limitations.append(
+            "Agent 3 completed only a partial source review; review coverage is incomplete."
+        )
+
+    if execution_result.get("skipped"):
+        limitations.append(
+            safe_value(
+                execution_result.get("skip_reason"),
+                "Automated test execution was skipped.",
+            )
+        )
+    elif not execution_result.get("executed"):
+        limitations.append("Automated test execution was not performed.")
+
+    if not static_map.get("has_tests") and not execution_result.get("skipped"):
+        limitations.append(
+            "No compatible automated tests were detected, so runtime behavior was not verified by the built-in test runner."
+        )
+
+    status_labels = {
+        "log_analysis": "Agent 1 runtime log analysis",
+        "repair_guidance": "Agent 2 repair guidance",
+        "code_repair_guidance": "Agent 3 runtime code-repair guidance",
+    }
+
+    for key, label in status_labels.items():
+        status = normalize_status(workflow_status.get(key), "NOT_REQUESTED")
+        if status == "UNAVAILABLE":
+            limitations.append(f"{label} was requested but unavailable.")
+        elif status == "NOT_RUN":
+            limitations.append(f"{label} was requested but could not run in this workflow.")
+
+    for item in source_review_json.get("limitations", []):
+        if item and item not in limitations:
+            limitations.append(str(item))
+
+    llm_errors = [
+        log_agent_json.get("llm_error"),
+        repair_agent_json.get("llm_error"),
+        code_agent_json.get("llm_error"),
+        source_review_json.get("llm_error"),
+    ]
+    if any(llm_errors):
+        limitations.append(
+            "One or more AI-agent responses used fallback or incomplete output because an LLM request failed."
+        )
+
+    return list(dict.fromkeys(limitations))
+
+
+def build_next_actions(
+    qa_decision,
+    static_map,
+    source_review_json,
+    execution_result,
+):
+    actions = []
+    status = normalize_status(qa_decision.get("status"), "QA_INCOMPLETE")
+    source_status = normalize_status(source_review_json.get("status"), "NOT_RUN")
+
+    if execution_result.get("executed") and not execution_result.get("success"):
+        actions.append(
+            {
+                "priority": "P1",
+                "action": "Resolve the validated test-execution failure and rerun Stitch QA before release.",
+            }
+        )
+
+    if status in {"BLOCK_RELEASE", "FAIL"}:
+        actions.append(
+            {
+                "priority": "P1",
+                "action": "Keep the release blocked until all confirmed release-blocking conditions are resolved.",
+            }
+        )
+
+    if source_status == "UNAVAILABLE":
+        actions.append(
+            {
+                "priority": "P1",
+                "action": "Restore Agent 3 availability and rerun the source-code review to complete QA evidence.",
+            }
+        )
+
+    if not static_map.get("has_tests"):
+        actions.append(
+            {
+                "priority": "P2",
+                "action": "Add compatible automated tests for critical behavior and rerun the validated test workflow.",
+            }
+        )
+
+    for finding in normalize_findings(source_review_json.get("findings", [])):
+        recommendation = safe_value(finding.get("recommendation"))
+        if not recommendation:
+            continue
+
+        severity = finding.get("severity", "UNKNOWN")
+        if severity in {"CRITICAL", "HIGH"}:
+            priority = "P1"
+        elif severity == "MEDIUM":
+            priority = "P2"
+        else:
+            priority = "P3"
+
+        action = {
+            "priority": priority,
+            "action": str(recommendation),
+            "finding_id": safe_value(finding.get("id")),
+            "severity": severity,
+        }
+        if action not in actions:
+            actions.append(action)
+
+    if not actions:
+        actions.append(
+            {
+                "priority": "P3",
+                "action": "Keep the current QA baseline and rerun Stitch QA after future project changes.",
+            }
+        )
+
+    unique_actions = []
+    seen_actions = set()
+    for action in actions:
+        action_key = str(action.get("action", "")).strip().lower()
+        if not action_key or action_key in seen_actions:
+            continue
+        seen_actions.add(action_key)
+        unique_actions.append(action)
+
+    priority_order = {"P1": 1, "P2": 2, "P3": 3}
+    return sorted(
+        unique_actions,
+        key=lambda item: (
+            priority_order.get(item.get("priority"), 9),
+            item.get("action", ""),
+        ),
+    )
+
+
+def format_next_actions(actions):
+    if not actions:
+        return "- None"
+
+    lines = []
+    for action in actions:
+        finding_reference = ""
+        if action.get("finding_id"):
+            finding_reference = f" (Finding: {action.get('finding_id')})"
+        lines.append(
+            f"- **{action.get('priority', 'P3')}** — {action.get('action')}{finding_reference}"
+        )
+    return "\n".join(lines)
+
+
 def build_source_review_markdown(source_review_data):
     data = build_source_review_json(source_review_data)
-    findings_text = format_source_findings(data["findings"])
+    findings = normalize_findings(data["findings"])
+    findings_summary = build_findings_summary(findings)
+    findings_text = format_source_findings(findings)
     warnings_text = format_markdown_list(data["warnings"])
     limitations_text = format_markdown_list(data["limitations"])
     coverage = data.get("coverage", {})
+    findings_table = format_markdown_table(
+        ["Severity", "Count"],
+        [
+            [severity, findings_summary.get(severity.lower(), 0)]
+            for severity in SEVERITY_DISPLAY_ORDER
+        ],
+    )
 
     return (
-        "## Agent 3 Source Code QA Review\n\n"
+        "## Source Code QA Review\n\n"
+        "### Review Summary\n\n"
         f"- Status: **{safe_value(data.get('status'), 'NOT_RUN')}**\n"
         f"- Agent: {safe_value(data.get('agent'), 'Not available')}\n"
         f"- Mode: {safe_value(data.get('mode'), 'Not available')}\n"
         f"- Reviewed Files: {data.get('reviewed_files_count', 0)}\n"
-        f"- Findings: {data.get('findings_count', 0)}\n"
+        f"- Total Findings: {findings_summary.get('total', 0)}\n"
         f"- Risk Level: **{safe_value(data.get('risk_level'), 'UNKNOWN')}**\n"
-        f"- Release Recommendation: **{safe_value(data.get('release_recommendation'), 'QA_INCOMPLETE')}**\n"
-        f"- Severity Summary: {format_summary_mapping(data.get('severity_summary'))}\n"
-        f"- Category Summary: {format_summary_mapping(data.get('category_summary'))}\n\n"
-        "### Summary\n\n"
+        f"- Release Recommendation: **{safe_value(data.get('release_recommendation'), 'QA_INCOMPLETE')}**\n\n"
         f"{safe_value(data.get('summary'), 'Source review was not run.')}\n\n"
-        "### Coverage\n\n"
+        "### Findings Overview\n\n"
+        f"{findings_table}\n\n"
+        f"- Category Summary: {format_summary_mapping(data.get('category_summary'))}\n\n"
+        "### Review Coverage\n\n"
         f"- Discovered Files: {coverage.get('discovered_files_count', 0)}\n"
         f"- Submitted Files: {coverage.get('submitted_files_count', 0)}\n"
         f"- Submitted Characters: {coverage.get('submitted_chars', 0)}\n"
         f"- Truncated Files: {coverage.get('truncated_files_count', 0)}\n"
         f"- Omitted Files: {coverage.get('omitted_files_count', 0)}\n"
         f"- Read Errors: {coverage.get('read_error_files_count', 0)}\n\n"
-        "### Findings\n\n"
+        "### Prioritized Findings\n\n"
         f"{findings_text}\n\n"
-        "### Warnings\n\n"
+        "### Source Review Warnings\n\n"
         f"{warnings_text}\n\n"
-        "### Limitations\n\n"
+        "### Source Review Limitations\n\n"
         f"{limitations_text}\n\n"
-        "### Verification\n\n"
+        "### Verification Guidance\n\n"
         f"{safe_value(data.get('verification'), 'Rerun Stitch QA after addressing confirmed findings.')}\n\n"
     )
 
 
 def build_qa_decision_markdown(qa_decision):
     workflow_status = qa_decision.get("workflow_status", {})
+    decision_table = format_markdown_table(
+        ["Decision Field", "Result"],
+        [
+            ["Final QA Status", f"**{qa_decision.get('status')}**"],
+            ["Combined Risk Level", f"**{qa_decision.get('risk_level')}**"],
+            [
+                "Release Recommendation",
+                f"**{qa_decision.get('release_recommendation')}**",
+            ],
+            ["QA Evidence Completeness", f"**{qa_decision.get('completeness')}**"],
+            ["CI Exit Code", qa_decision.get("ci_exit_code")],
+        ],
+    )
+    workflow_table = format_markdown_table(
+        ["Workflow Component", "Status"],
+        [
+            ["Agent 3 Source Review", workflow_status.get("source_review", "NOT_RUN")],
+            ["Validated Test Execution", workflow_status.get("test_execution", "NOT_RUN")],
+            ["Agent 1 Log Analysis", workflow_status.get("log_analysis", "NOT_REQUESTED")],
+            ["Agent 2 Repair Guidance", workflow_status.get("repair_guidance", "NOT_REQUESTED")],
+            [
+                "Agent 3 Code Repair Guidance",
+                workflow_status.get("code_repair_guidance", "NOT_REQUESTED"),
+            ],
+        ],
+    )
     return (
         "## Combined QA Decision\n\n"
-        f"- Final QA Status: **{qa_decision.get('status')}**\n"
-        f"- Combined Risk Level: **{qa_decision.get('risk_level')}**\n"
-        f"- Release Recommendation: **{qa_decision.get('release_recommendation')}**\n"
-        f"- QA Evidence Completeness: **{qa_decision.get('completeness')}**\n"
-        f"- CI Exit Code: {qa_decision.get('ci_exit_code')}\n\n"
-        "### Agent Workflow Status\n\n"
-        f"- Agent 3 Source Review: {workflow_status.get('source_review', 'NOT_RUN')}\n"
-        f"- Test Execution: {workflow_status.get('test_execution', 'NOT_RUN')}\n"
-        f"- Agent 1 Log Analysis: {workflow_status.get('log_analysis', 'NOT_REQUESTED')}\n"
-        f"- Agent 2 Repair Guidance: {workflow_status.get('repair_guidance', 'NOT_REQUESTED')}\n"
-        f"- Agent 3 Code Repair Guidance: {workflow_status.get('code_repair_guidance', 'NOT_REQUESTED')}\n\n"
+        f"{decision_table}\n\n"
         "### Decision Reasons\n\n"
         f"{format_markdown_list(qa_decision.get('reasons', []))}\n\n"
+        "### Agent Workflow Status\n\n"
+        f"{workflow_table}\n\n"
     )
+
+
+def build_agent_details_markdown(
+    log_agent_json,
+    repair_agent_json,
+    code_agent_json,
+):
+    log_section = (
+        "### Agent 1 Runtime Log Analysis\n\n"
+        f"- Agent: {safe_value(log_agent_json.get('agent'), 'Not available')}\n"
+        f"- Mode: {safe_value(log_agent_json.get('mode'), 'Not available')}\n"
+        f"- Final Status: {safe_value(log_agent_json.get('final_status'), 'Not requested')}\n\n"
+        "**Summary**\n\n"
+        f"{safe_value(log_agent_json.get('summary'), 'Not requested')}\n\n"
+        "**Root Cause**\n\n"
+        f"{safe_value(log_agent_json.get('root_cause'), 'Not available')}\n\n"
+        "**Recommendation**\n\n"
+        f"{safe_value(log_agent_json.get('recommendation'), 'Not available')}\n\n"
+        "**Issues**\n\n"
+        f"{format_markdown_list(log_agent_json.get('issues', []))}\n\n"
+        "**Warnings**\n\n"
+        f"{format_markdown_list(log_agent_json.get('warnings', []))}\n\n"
+    )
+
+    if log_agent_json.get("llm_error"):
+        log_section += (
+            "**LLM Error**\n\n"
+            f"{log_agent_json.get('llm_error')}\n\n"
+        )
+
+    repair_section = (
+        "### Agent 2 Repair Guidance\n\n"
+        f"- Agent: {safe_value(repair_agent_json.get('agent'), 'Not available')}\n"
+        f"- Mode: {safe_value(repair_agent_json.get('mode'), 'Not available')}\n"
+        f"- Status: {safe_value(repair_agent_json.get('status'), 'Not requested')}\n"
+        f"- Risk Level: {safe_value(repair_agent_json.get('risk_level'), 'Not available')}\n"
+        f"- Auto Apply: {safe_value(repair_agent_json.get('auto_apply'), 'Not available')}\n\n"
+        "**Summary**\n\n"
+        f"{safe_value(repair_agent_json.get('summary'), 'Not requested')}\n\n"
+        "**Suggestions**\n\n"
+        f"{format_markdown_list(repair_agent_json.get('suggestions', []))}\n\n"
+        "**Next Action**\n\n"
+        f"{safe_value(repair_agent_json.get('next_action'), 'Not available')}\n\n"
+        "**Warnings**\n\n"
+        f"{format_markdown_list(repair_agent_json.get('warnings', []))}\n\n"
+    )
+
+    if repair_agent_json.get("llm_error"):
+        repair_section += (
+            "**LLM Error**\n\n"
+            f"{repair_agent_json.get('llm_error')}\n\n"
+        )
+
+    code_section = (
+        "### Agent 3 Runtime Code Repair Guidance\n\n"
+        f"- Agent: {safe_value(code_agent_json.get('agent'), 'Not available')}\n"
+        f"- Mode: {safe_value(code_agent_json.get('mode'), 'Not available')}\n"
+        f"- Status: {safe_value(code_agent_json.get('status'), 'Not requested')}\n"
+        f"- Risk Level: {safe_value(code_agent_json.get('risk_level'), 'Not available')}\n"
+        f"- Auto Apply: {safe_value(code_agent_json.get('auto_apply'), 'Not available')}\n\n"
+        "**Summary**\n\n"
+        f"{safe_value(code_agent_json.get('summary'), 'Not requested')}\n\n"
+        "**Suggested Patch**\n\n"
+        f"{safe_value(code_agent_json.get('suggested_patch'), 'No direct patch generated. Manual review required.')}\n\n"
+        "**Verification**\n\n"
+        f"{safe_value(code_agent_json.get('verification'), 'Rerun Stitch QA after applying any manual changes.')}\n\n"
+        "**Warnings**\n\n"
+        f"{format_markdown_list(code_agent_json.get('warnings', []))}\n\n"
+    )
+
+    if code_agent_json.get("llm_error"):
+        code_section += (
+            "**LLM Error**\n\n"
+            f"{code_agent_json.get('llm_error')}\n\n"
+        )
+
+    return "## Agent Workflow Details\n\n" + log_section + repair_section + code_section
 
 
 def generate_report(
@@ -574,7 +965,7 @@ def generate_report(
     project_type = scan_result.get("project_type", "Unknown")
     static_map = scan_result.get("static_map", {})
     source_discovery = scan_result.get("source_review", {})
-    generated_at = str(datetime.now())
+    generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
 
     md_report_path = project_path / "STITCH_QA_REPORT.md"
     json_report_path = project_path / "STITCH_QA_REPORT.json"
@@ -584,27 +975,20 @@ def generate_report(
             "coming_soon_message",
             "Support for this project type is planned for a future release.",
         )
-
-        md_content = f"""# Stitch QA Report
-
-## Project Type Not Yet Supported
-
-**Detected Project Type:** {project_type}
-
-**Message:** {coming_soon_message}
-
-Stitch QA V2 currently supports:
-- **Java Maven** (pom.xml)
-- **Python** (requirements.txt / pyproject.toml)
-
-**Action Taken:** QA execution was skipped. No tests or AI agent workflows were run.
-**Exit Code:** 0 (Clean skip)
-
----
-Generated At: {generated_at}
-"""
-
+        executive_summary = {
+            "final_status": "SKIPPED",
+            "risk_level": "UNKNOWN",
+            "release_recommendation": "NOT_APPLICABLE",
+            "evidence_completeness": "NOT_STARTED",
+            "ci_exit_code": 0,
+        }
         json_content = {
+            "report_metadata": {
+                "schema_version": REPORT_SCHEMA_VERSION,
+                "tool_version": TOOL_VERSION,
+                "generated_at": generated_at,
+            },
+            "executive_summary": executive_summary,
             "final_status": "SKIPPED",
             "project_type": project_type,
             "coming_soon_message": coming_soon_message,
@@ -612,10 +996,33 @@ Generated At: {generated_at}
             "exit_code": 0,
             "generated_at": generated_at,
         }
-
+        md_content = (
+            "# Stitch QA Report\n\n"
+            "## Executive QA Summary\n\n"
+            + format_markdown_table(
+                ["Field", "Result"],
+                [
+                    ["Final QA Status", "**SKIPPED**"],
+                    ["Detected Project Type", project_type],
+                    ["Release Recommendation", "**NOT_APPLICABLE**"],
+                    ["CI Exit Code", 0],
+                ],
+            )
+            + "\n\n"
+            "## Scope Decision\n\n"
+            f"{coming_soon_message}\n\n"
+            "Stitch QA V2 currently supports:\n\n"
+            "- **Java Maven** (`pom.xml`)\n"
+            "- **Python** (`requirements.txt` or `pyproject.toml`)\n\n"
+            "## Action Taken\n\n"
+            "QA execution was skipped. No tests or AI-agent workflows were run.\n\n"
+            "## Report Metadata\n\n"
+            f"- Report Schema Version: {REPORT_SCHEMA_VERSION}\n"
+            f"- Tool Version: {TOOL_VERSION}\n"
+            f"- Generated At: {generated_at}\n"
+        )
         md_report_path.write_text(md_content, encoding="utf-8")
         json_report_path.write_text(json.dumps(json_content, indent=2), encoding="utf-8")
-
         return md_report_path
 
     qa_decision = qa_decision or build_qa_decision(
@@ -637,11 +1044,52 @@ Generated At: {generated_at}
     stdout_text = execution_result.get("stdout", "")[-2000:]
     stderr_text = execution_result.get("stderr", "")[-2000:]
     source_review_json = build_source_review_json(source_review_data)
+    source_review_json["findings"] = normalize_findings(source_review_json.get("findings", []))
+    source_review_json["findings_count"] = len(source_review_json["findings"])
     log_agent_json = build_log_agent_json(agent_data)
     repair_agent_json = build_repair_agent_json(repair_data)
     code_agent_json = build_code_agent_json(code_data)
+    findings_summary = build_findings_summary(source_review_json["findings"])
+    qa_scope = build_scope_summary(
+        static_map,
+        source_discovery,
+        source_review_json,
+        execution_result,
+        qa_decision,
+    )
+    limitations = build_report_limitations(
+        static_map,
+        source_review_json,
+        execution_result,
+        qa_decision,
+        log_agent_json,
+        repair_agent_json,
+        code_agent_json,
+    )
+    next_actions = build_next_actions(
+        qa_decision,
+        static_map,
+        source_review_json,
+        execution_result,
+    )
+    executive_summary = {
+        "final_status": final_status,
+        "risk_level": qa_decision.get("risk_level"),
+        "release_recommendation": qa_decision.get("release_recommendation"),
+        "evidence_completeness": qa_decision.get("completeness"),
+        "ci_exit_code": qa_decision.get("ci_exit_code"),
+        "source_review_status": source_review_json.get("status"),
+        "test_execution_status": execution_status,
+        "total_source_findings": findings_summary.get("total", 0),
+    }
 
     json_content = {
+        "report_metadata": {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "tool_version": TOOL_VERSION,
+            "generated_at": generated_at,
+        },
+        "executive_summary": executive_summary,
         "project": {
             "path": scan_result["project_path"],
             "type": scan_result["project_type"],
@@ -649,8 +1097,10 @@ Generated At: {generated_at}
             "total_folders": scan_result["total_folders"],
             "ignored_items": scan_result["ignored_items"],
         },
+        "qa_scope": qa_scope,
         "static_mapping": build_static_mapping_json(static_map),
         "source_review_discovery": build_source_discovery_json(source_discovery),
+        "findings_summary": findings_summary,
         "source_review": source_review_json,
         "project_recommendations": format_list(project_recommendations),
         "execution": {
@@ -673,10 +1123,17 @@ Generated At: {generated_at}
             "failure_type": execution_result.get("failure_type"),
             "help_message": execution_result.get("help_message"),
         },
+        "agents": {
+            "log_analysis": log_agent_json,
+            "repair_guidance": repair_agent_json,
+            "code_repair_guidance": code_agent_json,
+        },
         "log_agent": log_agent_json,
         "repair_agent": repair_agent_json,
         "code_agent_repair": code_agent_json,
         "qa_decision": qa_decision,
+        "limitations": limitations,
+        "next_actions": next_actions,
         "evidence": {
             "stdout": stdout_text,
             "stderr": stderr_text,
@@ -684,19 +1141,11 @@ Generated At: {generated_at}
         "final_status": final_status,
         "generated_at": generated_at,
     }
-
     json_report_path.write_text(
         json.dumps(json_content, indent=2),
         encoding="utf-8",
     )
 
-    log_issues = format_markdown_list(log_agent_json["issues"])
-    log_warnings = format_markdown_list(log_agent_json["warnings"])
-    repair_suggestions = format_markdown_list(repair_agent_json["suggestions"])
-    repair_warnings = format_markdown_list(repair_agent_json["warnings"])
-    project_recommendations_text = format_markdown_list(project_recommendations)
-    static_mapping_text = build_static_mapping_markdown(static_map)
-    detected_test_files_text = format_markdown_list(static_map.get("test_files", []))
     command_text = safe_value(execution_result.get("command"), "Not available")
     command_profile_text = safe_value(execution_result.get("command_profile"), "Not available")
     execution_policy_text = safe_value(execution_result.get("execution_policy"), "Not available")
@@ -709,151 +1158,130 @@ Generated At: {generated_at}
     validation_status_text = safe_value(execution_result.get("validation_status"), "Not available")
     validation_error_text = safe_value(execution_result.get("validation_error"), "None")
     skip_reason_text = safe_value(execution_result.get("skip_reason"), "None")
+    static_mapping_text = build_static_mapping_markdown(static_map)
+    detected_test_files_text = format_markdown_list(static_map.get("test_files", []))
+    project_recommendations_text = format_markdown_list(project_recommendations)
     source_review_section = build_source_review_markdown(source_review_data)
     qa_decision_section = build_qa_decision_markdown(qa_decision)
+    agent_details_section = build_agent_details_markdown(
+        log_agent_json,
+        repair_agent_json,
+        code_agent_json,
+    )
+
+    executive_table = format_markdown_table(
+        ["Field", "Result"],
+        [
+            ["Final QA Status", f"**{final_status}**"],
+            ["Combined Risk Level", f"**{qa_decision.get('risk_level')}**"],
+            [
+                "Release Recommendation",
+                f"**{qa_decision.get('release_recommendation')}**",
+            ],
+            ["QA Evidence Completeness", f"**{qa_decision.get('completeness')}**"],
+            ["CI Exit Code", qa_decision.get("ci_exit_code")],
+            ["Project Type", scan_result["project_type"]],
+            ["Source Review Status", source_review_json.get("status")],
+            ["Test Execution Status", execution_status],
+            ["Total Source Findings", findings_summary.get("total", 0)],
+        ],
+    )
+    scope_table = format_markdown_table(
+        ["Coverage Area", "Result"],
+        [
+            ["Source Review Supported", "Yes" if qa_scope["source_review_supported"] else "No"],
+            ["Application Source Files Discovered", qa_scope["source_files_discovered"]],
+            ["Application Source Files Reviewed", qa_scope["source_files_reviewed"]],
+            ["Compatible Tests Detected", "Yes" if qa_scope["tests_detected"] else "No"],
+            ["Test Files Detected", qa_scope["test_files_detected"]],
+            ["Test Framework", safe_value(qa_scope["test_framework"], "Not available")],
+            ["Automated Test Execution Performed", "Yes" if qa_scope["test_execution_performed"] else "No"],
+            ["Evidence Completeness", qa_scope["evidence_completeness"]],
+        ],
+    )
+    project_table = format_markdown_table(
+        ["Project Field", "Value"],
+        [
+            ["Project Path", scan_result["project_path"]],
+            ["Project Type", scan_result["project_type"]],
+            ["Total Files", scan_result["total_files"]],
+            ["Total Folders", scan_result["total_folders"]],
+            ["Ignored Items", scan_result["ignored_items"]],
+        ],
+    )
+    execution_table = format_markdown_table(
+        ["Execution Field", "Result"],
+        [
+            ["Status", execution_status],
+            ["Command Profile", command_profile_text],
+            ["Execution Policy", execution_policy_text],
+            ["Execution Strategy", execution_strategy_text],
+            ["Shell Enabled", execution_result.get("shell_enabled", False)],
+            ["Validation Status", validation_status_text],
+            ["Validation Error", validation_error_text],
+            ["Command", f"`{command_text}`"],
+            ["Resolved Arguments", f"`{command_args_text}`"],
+            ["Resolved Executable", f"`{executable_text}`"],
+            ["Timeout Seconds", execution_result.get("timeout_seconds")],
+            ["Executed", execution_result.get("executed", True)],
+            ["Skipped", execution_result.get("skipped", False)],
+            ["Skip Reason", skip_reason_text],
+            ["Success", execution_result.get("success")],
+            ["Exit Code", execution_result.get("exit_code")],
+            ["Failure Type", safe_value(execution_result.get("failure_type"), "None")],
+            ["Help Message", safe_value(execution_result.get("help_message"), "None")],
+        ],
+    )
 
     if execution_result.get("skipped"):
         evidence_section = (
-            "## Evidence Logs\n\n"
-            "No runtime evidence logs were generated because the test command was not executed.\n\n"
+            "## Technical Evidence\n\n"
+            "No runtime evidence logs were generated because the validated test command was not executed.\n\n"
         )
     else:
         evidence_section = (
-            "## Evidence Logs\n\n"
+            "## Technical Evidence\n\n"
             "### STDOUT Snapshot\n\n"
             "```text\n"
-            f"{stdout_text}\n"
+            f"{stdout_text or 'No stdout output.'}\n"
             "```\n\n"
-            "### STDERR / Warning Snapshot\n\n"
+            "### STDERR and Warning Snapshot\n\n"
             "```text\n"
-            f"{stderr_text}\n"
+            f"{stderr_text or 'No stderr output.'}\n"
             "```\n\n"
-        )
-
-    if code_data:
-        code_section = (
-            "## Agent 3 Code Repair Guidance\n\n"
-            f"- Agent: {safe_value(code_agent_json.get('agent'), 'Not available')}\n"
-            f"- Mode: {safe_value(code_agent_json.get('mode'), 'Not available')}\n"
-            f"- Status: {safe_value(code_agent_json.get('status'), 'Not available')}\n"
-            f"- Risk Level: {safe_value(code_agent_json.get('risk_level'), 'Not available')}\n"
-            f"- Auto Apply: {safe_value(code_agent_json.get('auto_apply'), 'Not available')}\n\n"
-            "### Summary\n\n"
-            f"{safe_value(code_agent_json.get('summary'), 'Not available')}\n\n"
-            "### Suggested Patch\n\n"
-            f"{safe_value(code_agent_json.get('suggested_patch'), 'No direct patch generated. Manual review required.')}\n\n"
-            "### Verification\n\n"
-            f"{safe_value(code_agent_json.get('verification'), 'Rerun Stitch QA after applying any manual changes.')}\n\n"
-        )
-
-        if code_agent_json.get("warnings"):
-            code_section += (
-                "### Warnings\n\n"
-                f"{format_markdown_list(code_agent_json.get('warnings'))}\n\n"
-            )
-
-        if code_agent_json.get("llm_error"):
-            code_section += (
-                "### Code Agent LLM Error\n\n"
-                f"{code_agent_json.get('llm_error')}\n\n"
-            )
-    else:
-        code_section = (
-            "## Agent 3 Code Repair Guidance\n\n"
-            "No runtime code-repair guidance was requested or generated for this run.\n\n"
         )
 
     md_content = (
         "# Stitch QA Report\n\n"
-        "## Executive Summary\n\n"
-        f"- Final QA Status: **{final_status}**\n"
-        f"- Combined Risk Level: **{qa_decision.get('risk_level')}**\n"
-        f"- Combined Release Recommendation: **{qa_decision.get('release_recommendation')}**\n"
-        f"- QA Evidence Completeness: **{qa_decision.get('completeness')}**\n"
-        f"- CI Exit Code: {qa_decision.get('ci_exit_code')}\n"
-        f"- Project Type: {scan_result['project_type']}\n"
-        f"- Source Review Status: **{source_review_json.get('status')}**\n"
-        f"- Source Risk Level: **{source_review_json.get('risk_level')}**\n"
-        f"- Tests Found: {'Yes' if static_map.get('has_tests') else 'No'}\n"
-        f"- Test Files Count: {static_map.get('test_files_count', 0)}\n"
-        f"- Execution Status: **{execution_status}**\n"
-        f"- Command Profile: {command_profile_text}\n"
-        f"- Execution Policy: {execution_policy_text}\n"
-        f"- Execution Strategy: {execution_strategy_text}\n"
-        f"- Shell Enabled: {execution_result.get('shell_enabled', False)}\n"
-        f"- Test Command: `{command_text}`\n"
-        f"- Exit Code: {execution_result.get('exit_code')}\n\n"
+        "## Executive QA Summary\n\n"
+        f"{executive_table}\n\n"
+        "### Overall Assessment\n\n"
         f"{execution_summary}\n\n"
         + qa_decision_section
-        + "## Project Summary\n\n"
-        f"- Project Path: {scan_result['project_path']}\n"
-        f"- Project Type: {scan_result['project_type']}\n"
-        f"- Total Files: {scan_result['total_files']}\n"
-        f"- Total Folders: {scan_result['total_folders']}\n"
-        f"- Ignored Items: {scan_result['ignored_items']}\n"
-        f"- Reviewable Source Files: {source_discovery.get('source_files_count', 0)}\n\n"
-        "## Static Mapping\n\n"
+        + "## QA Scope and Coverage\n\n"
+        f"{scope_table}\n\n"
+        "### Coverage Notes and Limitations\n\n"
+        f"{format_markdown_list(limitations)}\n\n"
+        "## Project Overview\n\n"
+        f"{project_table}\n\n"
+        "### Static Mapping and Test Detection\n\n"
         f"{static_mapping_text}\n\n"
-        + source_review_section
-        + "## Detected Test Files\n\n"
+        "### Detected Test Files\n\n"
         f"{detected_test_files_text}\n\n"
-        "## Project Recommendations\n\n"
+        + source_review_section
+        + "## Test Execution\n\n"
+        f"{execution_table}\n\n"
+        + agent_details_section
+        + "## Recommendations and Next Actions\n\n"
+        "### Prioritized Next Actions\n\n"
+        f"{format_next_actions(next_actions)}\n\n"
+        "### Project Recommendations\n\n"
         f"{project_recommendations_text}\n\n"
-        "## Test Execution Result\n\n"
-        f"- Status: {execution_status}\n"
-        f"- Command Profile: {command_profile_text}\n"
-        f"- Execution Policy: {execution_policy_text}\n"
-        f"- Execution Strategy: {execution_strategy_text}\n"
-        f"- Shell Enabled: {execution_result.get('shell_enabled', False)}\n"
-        f"- Validation Status: {validation_status_text}\n"
-        f"- Validation Error: {validation_error_text}\n"
-        f"- Command: `{command_text}`\n"
-        f"- Resolved Arguments: `{command_args_text}`\n"
-        f"- Resolved Executable: `{executable_text}`\n"
-        f"- Timeout Seconds: {execution_result.get('timeout_seconds')}\n"
-        f"- Executed: {execution_result.get('executed', True)}\n"
-        f"- Skipped: {execution_result.get('skipped', False)}\n"
-        f"- Skip Reason: {skip_reason_text}\n"
-        f"- Success: {execution_result.get('success')}\n"
-        f"- Exit Code: {execution_result.get('exit_code')}\n"
-        f"- Failure Type: {safe_value(execution_result.get('failure_type'), 'None')}\n"
-        f"- Help Message: {safe_value(execution_result.get('help_message'), 'None')}\n\n"
-        "## Agent 1 Runtime Log Analysis\n\n"
-        f"- Agent: {safe_value(log_agent_json.get('agent'), 'Not available')}\n"
-        f"- Mode: {safe_value(log_agent_json.get('mode'), 'Not available')}\n"
-        f"- Final Status: {safe_value(log_agent_json.get('final_status'), 'Not requested')}\n\n"
-        "### Summary\n\n"
-        f"{safe_value(log_agent_json.get('summary'), 'Not requested')}\n\n"
-        "### Root Cause\n\n"
-        f"{safe_value(log_agent_json.get('root_cause'), 'Not available')}\n\n"
-        "### Recommendation\n\n"
-        f"{safe_value(log_agent_json.get('recommendation'), 'Not available')}\n\n"
-        "### Issues\n\n"
-        f"{log_issues}\n\n"
-        "### Warnings\n\n"
-        f"{log_warnings}\n\n"
-        "## Agent 2 Repair Guidance\n\n"
-        f"- Agent: {safe_value(repair_agent_json.get('agent'), 'Not available')}\n"
-        f"- Mode: {safe_value(repair_agent_json.get('mode'), 'Not available')}\n"
-        f"- Status: {safe_value(repair_agent_json.get('status'), 'Not requested')}\n"
-        f"- Risk Level: {safe_value(repair_agent_json.get('risk_level'), 'Not available')}\n"
-        f"- Auto Apply: {safe_value(repair_agent_json.get('auto_apply'), 'Not available')}\n\n"
-        "### Summary\n\n"
-        f"{safe_value(repair_agent_json.get('summary'), 'Not requested')}\n\n"
-        "### Suggestions\n\n"
-        f"{repair_suggestions}\n\n"
-        "### Next Action\n\n"
-        f"{safe_value(repair_agent_json.get('next_action'), 'Not available')}\n\n"
-        "### Warnings\n\n"
-        f"{repair_warnings}\n\n"
-        + code_section
         + evidence_section
-        + "## Final QA Status\n\n"
-        f"**{final_status}**\n\n"
-        "----------------------------------------\n"
-        f"Generated At: {generated_at}\n"
+        + "## Report Metadata\n\n"
+        f"- Report Schema Version: {REPORT_SCHEMA_VERSION}\n"
+        f"- Tool Version: {TOOL_VERSION}\n"
+        f"- Generated At: {generated_at}\n"
     )
-
     md_report_path.write_text(md_content, encoding="utf-8")
-
     return md_report_path

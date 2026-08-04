@@ -1,7 +1,12 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "stitch-cli"
 version = "0.1.0"
 description = "CLI tool for Stitch QA"
+requires-python = ">=3.11"
 dependencies = [
     "click",
     "rich",

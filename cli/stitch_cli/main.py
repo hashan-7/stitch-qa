@@ -1,9 +1,9 @@
 import sys
+from pathlib import Path
+
 import click
 from rich.console import Console
-from stitch_cli.scanner import scan_project
-from stitch_cli.executor import build_skipped_result, execute_command
-from stitch_cli.reporter import build_qa_decision, generate_report
+
 from stitch_cli.agent_client import (
     analyze_logs_with_agent,
     build_unavailable_code_guidance,
@@ -11,10 +11,13 @@ from stitch_cli.agent_client import (
     build_unavailable_repair_guidance,
     build_unavailable_source_review,
     review_source_with_agent,
-    suggest_repair_with_agent,
     suggest_code_fix_with_agent,
+    suggest_repair_with_agent,
 )
 from stitch_cli.code_cli import run_analyze_code
+from stitch_cli.executor import build_skipped_result, execute_command
+from stitch_cli.reporter import build_qa_decision, generate_report
+from stitch_cli.scanner import scan_project
 
 console = Console()
 
@@ -71,7 +74,9 @@ def print_source_review_result(source_review_data):
             console.print(f"... and {len(findings) - 10} more source-review findings")
 
     for warning in source_review_data.get("warnings", []):
-        console.print(f"[bold yellow]Source Review Warning:[/bold yellow] {warning}")
+        console.print(
+            f"[bold yellow]Source Review Warning:[/bold yellow] {warning}"
+        )
 
 
 def print_log_agent_result(agent_data):
@@ -152,6 +157,29 @@ def print_qa_decision(qa_decision):
     )
     console.print(f"[bold]CI Exit Code:[/bold] {qa_decision.get('ci_exit_code')}")
 
+    workflow_status = qa_decision.get("workflow_status", {})
+    console.print("\n[bold cyan]Agent Workflow Status[/bold cyan]")
+    console.print(
+        f"- Agent 3 Source Review: "
+        f"{workflow_status.get('source_review', 'NOT_RUN')}"
+    )
+    console.print(
+        f"- Validated Test Execution: "
+        f"{workflow_status.get('test_execution', 'NOT_RUN')}"
+    )
+    console.print(
+        f"- Agent 1 Log Analysis: "
+        f"{workflow_status.get('log_analysis', 'NOT_REQUESTED')}"
+    )
+    console.print(
+        f"- Agent 2 Repair Guidance: "
+        f"{workflow_status.get('repair_guidance', 'NOT_REQUESTED')}"
+    )
+    console.print(
+        f"- Agent 3 Code Repair Guidance: "
+        f"{workflow_status.get('code_repair_guidance', 'NOT_REQUESTED')}"
+    )
+
     console.print("\n[bold cyan]Decision Reasons[/bold cyan]")
     for reason in qa_decision.get("reasons", []):
         console.print(f"- {reason}")
@@ -174,9 +202,21 @@ def analyze_code(code_agent_url):
 @cli.command()
 @click.argument("path", required=False, default=".")
 @click.option("--run", is_flag=True, help="Run the supported QA workflow.")
-@click.option("--analyze", is_flag=True, help="Send execution logs to the log agent.")
-@click.option("--repair", is_flag=True, help="Send execution logs to the repair agent.")
-@click.option("--code-fix", is_flag=True, help="Send repair context to the code agent.")
+@click.option(
+    "--analyze",
+    is_flag=True,
+    help="Send execution logs to the log agent.",
+)
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Send execution logs to the repair agent.",
+)
+@click.option(
+    "--code-fix",
+    is_flag=True,
+    help="Send repair context to the code agent.",
+)
 @click.option(
     "--agent-url",
     default="https://hashan-77-stitch-qa-log-agent.hf.space",
@@ -189,7 +229,16 @@ def analyze_code(code_agent_url):
     "--code-agent-url",
     default="https://hashan-77-stitch-qa-code-agent.hf.space",
 )
-def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code_agent_url):
+def scan(
+    path,
+    run,
+    analyze,
+    repair,
+    code_fix,
+    agent_url,
+    repair_agent_url,
+    code_agent_url,
+):
     try:
         result = scan_project(path)
     except Exception as error:
@@ -219,7 +268,9 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         f"{format_console_list(static_map.get('test_source_dirs', []))}"
     )
     console.print(f"[bold]Main File:[/bold] {static_map['main_file']}")
-    console.print(f"[bold]Suggested Command:[/bold] {static_map['suggested_command']}")
+    console.print(
+        f"[bold]Suggested Command:[/bold] {static_map['suggested_command']}"
+    )
     console.print(
         f"[bold]Execution Profile:[/bold] "
         f"{static_map.get('execution_profile')}"
@@ -312,13 +363,23 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         console.print(f"... and {result['total_files'] - 20} more files")
 
     if (analyze or repair or code_fix) and not run:
-        console.print("\n[bold red]Analyze/repair/code-fix requires --run.[/bold red]")
-        console.print("Use: stitch scan <path> --run --analyze --repair --code-fix")
+        console.print(
+            "\n[bold red]Analyze/repair/code-fix requires --run.[/bold red]"
+        )
+        console.print(
+            "Use: stitch scan <path> --run --analyze --repair --code-fix"
+        )
         sys.exit(1)
 
     if code_fix and not repair:
-        console.print("\n[bold yellow]Warning:[/bold yellow] --code-fix works best with --repair.")
-        console.print("Recommended: stitch scan <path> --run --analyze --repair --code-fix")
+        console.print(
+            "\n[bold yellow]Warning:[/bold yellow] "
+            "--code-fix works best with --repair."
+        )
+        console.print(
+            "Recommended: stitch scan <path> "
+            "--run --analyze --repair --code-fix"
+        )
 
     if not run:
         console.print(
@@ -335,19 +396,25 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
     execution_profile = static_map.get("execution_profile")
 
     if suggested_command is None or execution_profile is None:
-        console.print(f"\n[bold yellow]Project Type: {result['project_type']}[/bold yellow]")
         console.print(
-            "[bold yellow]Skipping execution. This project type is not yet supported "
-            "in this version.[/bold yellow]"
+            f"\n[bold yellow]Project Type: "
+            f"{result['project_type']}[/bold yellow]"
         )
         console.print(
-            f"[bold yellow]{static_map.get('coming_soon_message', '')}[/bold yellow]"
+            "[bold yellow]Skipping execution. This project type is not yet "
+            "supported in this version.[/bold yellow]"
+        )
+        console.print(
+            f"[bold yellow]{static_map.get('coming_soon_message', '')}"
+            f"[/bold yellow]"
         )
         console.print(
             "[bold yellow]Supported: Java Maven (pom.xml), Python "
             "(requirements.txt / pyproject.toml)[/bold yellow]"
         )
-        console.print("[bold green]Exiting cleanly with exit code 0.[/bold green]")
+        console.print(
+            "[bold green]Exiting cleanly with exit code 0.[/bold green]"
+        )
 
         generate_report(
             result,
@@ -385,19 +452,38 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
 
         console.print("\n[bold yellow]Test Execution Skipped[/bold yellow]")
         console.print(f"[bold]Status:[/bold] {execution_result['status']}")
-        console.print(f"[bold]Command Profile:[/bold] {execution_result['command_profile']}")
-        console.print(f"[bold]Execution Policy:[/bold] {execution_result['execution_policy']}")
-        console.print(f"[bold]Execution Strategy:[/bold] {execution_result['execution_strategy']}")
-        console.print(f"[bold]Shell Enabled:[/bold] {execution_result['shell_enabled']}")
-        console.print(f"[bold]Command Not Run:[/bold] {execution_result['command']}")
-        console.print(f"[bold]Reason:[/bold] {execution_result['skip_reason']}")
-        console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
+        console.print(
+            f"[bold]Command Profile:[/bold] "
+            f"{execution_result['command_profile']}"
+        )
+        console.print(
+            f"[bold]Execution Policy:[/bold] "
+            f"{execution_result['execution_policy']}"
+        )
+        console.print(
+            f"[bold]Execution Strategy:[/bold] "
+            f"{execution_result['execution_strategy']}"
+        )
+        console.print(
+            f"[bold]Shell Enabled:[/bold] "
+            f"{execution_result['shell_enabled']}"
+        )
+        console.print(
+            f"[bold]Command Not Run:[/bold] {execution_result['command']}"
+        )
+        console.print(
+            f"[bold]Reason:[/bold] {execution_result['skip_reason']}"
+        )
+        console.print(
+            f"[bold]Exit Code:[/bold] {execution_result['exit_code']}"
+        )
 
         if analyze or repair or code_fix:
             console.print(
-                "\n[bold yellow]Agent 1 runtime analysis, Agent 2 repair guidance, and "
-                "Agent 3 runtime code guidance were not run because no test command "
-                "was executed. Agent 3 source review was completed independently.[/bold yellow]"
+                "\n[bold yellow]Agent 1 runtime analysis, Agent 2 repair "
+                "guidance, and Agent 3 runtime code guidance were not run "
+                "because no test command was executed. Agent 3 source review "
+                "was completed independently.[/bold yellow]"
             )
     else:
         console.print("\n[bold magenta]Execution Started[/bold magenta]")
@@ -409,27 +495,57 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         )
 
         console.print(f"[bold]Status:[/bold] {execution_result['status']}")
-        console.print(f"[bold]Command Profile:[/bold] {execution_result['command_profile']}")
-        console.print(f"[bold]Execution Policy:[/bold] {execution_result['execution_policy']}")
-        console.print(f"[bold]Execution Strategy:[/bold] {execution_result['execution_strategy']}")
-        console.print(f"[bold]Shell Enabled:[/bold] {execution_result['shell_enabled']}")
-        console.print(f"[bold]Validation Status:[/bold] {execution_result['validation_status']}")
-        console.print(f"[bold]Command:[/bold] {execution_result['command']}")
+        console.print(
+            f"[bold]Command Profile:[/bold] "
+            f"{execution_result['command_profile']}"
+        )
+        console.print(
+            f"[bold]Execution Policy:[/bold] "
+            f"{execution_result['execution_policy']}"
+        )
+        console.print(
+            f"[bold]Execution Strategy:[/bold] "
+            f"{execution_result['execution_strategy']}"
+        )
+        console.print(
+            f"[bold]Shell Enabled:[/bold] "
+            f"{execution_result['shell_enabled']}"
+        )
+        console.print(
+            f"[bold]Validation Status:[/bold] "
+            f"{execution_result['validation_status']}"
+        )
+        console.print(
+            f"[bold]Command:[/bold] {execution_result['command']}"
+        )
         console.print(
             f"[bold]Resolved Args:[/bold] "
             f"{format_console_list(execution_result.get('command_args', []))}"
         )
-        console.print(f"[bold]Success:[/bold] {execution_result['success']}")
-        console.print(f"[bold]Exit Code:[/bold] {execution_result['exit_code']}")
+        console.print(
+            f"[bold]Success:[/bold] {execution_result['success']}"
+        )
+        console.print(
+            f"[bold]Exit Code:[/bold] {execution_result['exit_code']}"
+        )
 
         console.print("\n[bold cyan]STDOUT[/bold cyan]")
-        console.print(execution_result["stdout"][-3000:] or "No stdout output.")
+        console.print(
+            execution_result["stdout"][-3000:] or "No stdout output.",
+            markup=False,
+        )
 
         console.print("\n[bold red]STDERR[/bold red]")
-        console.print(execution_result["stderr"][-3000:] or "No stderr output.")
+        console.print(
+            execution_result["stderr"][-3000:] or "No stderr output.",
+            markup=False,
+        )
 
         if analyze:
-            console.print("\n[bold magenta]Agent 1 Runtime Log Analysis Started[/bold magenta]")
+            console.print(
+                "\n[bold magenta]Agent 1 Runtime Log Analysis Started"
+                "[/bold magenta]"
+            )
 
             analysis_result = analyze_logs_with_agent(
                 agent_url,
@@ -440,12 +556,17 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
             if analysis_result["success"]:
                 agent_data = analysis_result["data"]
             else:
-                agent_data = build_unavailable_log_analysis(analysis_result["error"])
+                agent_data = build_unavailable_log_analysis(
+                    analysis_result["error"]
+                )
 
             print_log_agent_result(agent_data)
 
         if repair:
-            console.print("\n[bold magenta]Agent 2 Repair Guidance Started[/bold magenta]")
+            console.print(
+                "\n[bold magenta]Agent 2 Repair Guidance Started"
+                "[/bold magenta]"
+            )
 
             repair_result = suggest_repair_with_agent(
                 repair_agent_url,
@@ -457,12 +578,17 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
             if repair_result["success"]:
                 repair_data = repair_result["data"]
             else:
-                repair_data = build_unavailable_repair_guidance(repair_result["error"])
+                repair_data = build_unavailable_repair_guidance(
+                    repair_result["error"]
+                )
 
             print_repair_agent_result(repair_data)
 
         if code_fix:
-            console.print("\n[bold magenta]Agent 3 Code Repair Guidance Started[/bold magenta]")
+            console.print(
+                "\n[bold magenta]Agent 3 Code Repair Guidance Started"
+                "[/bold magenta]"
+            )
 
             code_result = suggest_code_fix_with_agent(
                 code_agent_url,
@@ -475,7 +601,9 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
             if code_result["success"]:
                 code_data = code_result["data"]
             else:
-                code_data = build_unavailable_code_guidance(code_result["error"])
+                code_data = build_unavailable_code_guidance(
+                    code_result["error"]
+                )
 
             print_code_agent_result(code_data)
 
@@ -484,6 +612,7 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         "repair_requested": bool(repair),
         "code_fix_requested": bool(code_fix),
     }
+
     qa_decision = build_qa_decision(
         execution_result,
         source_review_data,
@@ -492,6 +621,7 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         code_data,
         workflow_context,
     )
+
     print_qa_decision(qa_decision)
 
     report_path = generate_report(
@@ -504,10 +634,21 @@ def scan(path, run, analyze, repair, code_fix, agent_url, repair_agent_url, code
         qa_decision,
         workflow_context,
     )
-    console.print(f"\n[bold green]Report generated:[/bold green] {report_path}")
+
+    markdown_report_path = Path(report_path)
+    json_report_path = markdown_report_path.with_suffix(".json")
+
+    console.print(
+        f"\n[bold green]Markdown report generated:[/bold green] "
+        f"{markdown_report_path}"
+    )
+    console.print(
+        f"[bold green]JSON report generated:[/bold green] "
+        f"{json_report_path}"
+    )
     console.print(
         "\n[bold green]Stitch QA scan completed.[/bold green] "
-        "Review the generated report for details."
+        "Review the generated reports for details."
     )
 
     if qa_decision.get("ci_exit_code"):
