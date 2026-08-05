@@ -155,6 +155,36 @@ def extract_json_object(text):
     )
 
 
+def prepare_payload_data(raw_json, base_analysis):
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"The model response failed JSON parsing: {error}"
+        ) from error
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            "The model response JSON root must be an object."
+        )
+
+    data.pop("release_advice", None)
+
+    allowed_group_ids = {
+        group.get("group_id")
+        for group in base_analysis.get("root_cause_groups", [])
+        if group.get("group_id")
+    }
+    test_result = str(
+        base_analysis.get("test_result") or ""
+    ).upper()
+
+    if test_result == "PASS" or not allowed_group_ids:
+        data["group_insights"] = []
+
+    return data
+
+
 def collect_allowed_references(base_analysis):
     allowed = set()
 
@@ -203,7 +233,6 @@ def assessment_texts(payload):
         payload.outcome_interpretation,
         payload.scope_assurance,
         payload.residual_runtime_risk,
-        payload.release_advice,
         payload.next_verification,
     ]
 
@@ -239,9 +268,6 @@ def normalize_payload(payload):
     )
     payload.residual_runtime_risk = normalize_prose(
         payload.residual_runtime_risk
-    )
-    payload.release_advice = normalize_prose(
-        payload.release_advice
     )
     payload.next_verification = normalize_prose(
         payload.next_verification
@@ -412,12 +438,14 @@ def validate_summary_duplication(payload, base_analysis):
 
 def validate_model_output(text, base_analysis):
     raw_json = extract_json_object(text)
+    data = prepare_payload_data(
+        raw_json,
+        base_analysis,
+    )
 
     try:
-        payload = ModelAnalysisPayload.model_validate(
-            json.loads(raw_json)
-        )
-    except (json.JSONDecodeError, ValidationError) as error:
+        payload = ModelAnalysisPayload.model_validate(data)
+    except ValidationError as error:
         raise ValueError(
             f"The model response failed schema validation: {error}"
         ) from error
@@ -462,14 +490,55 @@ def unique_prose(items):
     return result
 
 
-def render_assessment(payload):
+def deterministic_release_advice(base_analysis):
+    release_gate = str(
+        base_analysis.get("release_gate") or "REVIEW_REQUIRED"
+    ).upper()
+    test_result = str(
+        base_analysis.get("test_result") or "INCONCLUSIVE"
+    ).upper()
+
+    if release_gate == "ALLOW_RELEASE":
+        return (
+            "The runtime gate is ALLOW_RELEASE for this tested runtime scope only; "
+            "final project-level release judgment must consider the remaining QA evidence."
+        )
+
+    if release_gate == "ALLOW_WITH_WARNINGS":
+        return (
+            "The runtime gate is ALLOW_WITH_WARNINGS for this tested runtime scope only; "
+            "supplied runtime warnings must be reviewed with the remaining QA evidence."
+        )
+
+    if release_gate == "BLOCK_RELEASE":
+        return (
+            "The runtime gate is BLOCK_RELEASE because confirmed runtime failures require resolution "
+            "and verification before release consideration."
+        )
+
+    if test_result == "NOT_RUN":
+        return (
+            "The runtime gate is REVIEW_REQUIRED because no executed runtime test result was established."
+        )
+
+    if test_result == "INCONCLUSIVE":
+        return (
+            "The runtime gate is REVIEW_REQUIRED because the runtime evidence is inconclusive."
+        )
+
+    return (
+        "The runtime gate is REVIEW_REQUIRED until sufficient runtime evidence is available."
+    )
+
+
+def render_assessment(payload, base_analysis):
     return " ".join(
         unique_prose(
             [
                 payload.outcome_interpretation,
                 payload.scope_assurance,
                 payload.residual_runtime_risk,
-                payload.release_advice,
+                deterministic_release_advice(base_analysis),
                 payload.next_verification,
             ]
         )
@@ -505,7 +574,10 @@ def merge_model_output(base_analysis, payload):
         )
 
     merged["root_cause_groups"] = groups
-    merged["summary"] = render_assessment(payload)
+    merged["summary"] = render_assessment(
+        payload,
+        base_analysis,
+    )
 
     required_actions = unique_prose(
         group.get("required_action")

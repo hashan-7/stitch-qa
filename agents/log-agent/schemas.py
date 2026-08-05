@@ -100,7 +100,6 @@ class ModelAnalysisPayload(BaseModel):
     outcome_interpretation: str = Field(min_length=20, max_length=1000)
     scope_assurance: str = Field(min_length=20, max_length=1000)
     residual_runtime_risk: str = Field(min_length=20, max_length=1000)
-    release_advice: str = Field(min_length=20, max_length=1000)
     next_verification: str = Field(min_length=20, max_length=1000)
     group_insights: list[ModelGroupInsight] = Field(
         default_factory=list,
