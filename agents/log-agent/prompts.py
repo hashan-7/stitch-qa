@@ -1,551 +1,194 @@
 import json
-import re
-from difflib import SequenceMatcher
-
-from pydantic import ValidationError
-
-from schemas import ModelAnalysisPayload
+import os
 
 
-FILE_LINE_PATTERN = re.compile(
-    r"(?P<path>[A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+):(?P<line>\d+)"
-)
+SYSTEM_PROMPT = """You are Stitch QA's Runtime Quality Intelligence Analyst, a senior evidence-based runtime QA specialist. Your duty is limited to interpreting supplied runtime execution and automated test evidence. Return exactly one valid JSON object and nothing else.
 
-GLOBAL_RELEASE_CLAIMS = {
-    "application is ready for deployment",
-    "application is ready for release",
-    "application is deployment ready",
-    "system is ready for deployment",
-    "system is production ready",
-    "software is production ready",
-    "product is production ready",
-    "safe to deploy",
-    "safe for deployment",
-    "release may proceed",
-    "fully validated",
-    "completely validated",
-    "no defects exist",
-    "all requirements are satisfied",
-    "all application behavior is correct",
-}
+Locked facts are authoritative. Never invent, modify, reinterpret, or contradict test counts, test names, exception types, file paths, line numbers, commands, exit codes, execution outcomes, evidence quality, confidence levels, or runtime release gates.
 
-OUT_OF_SCOPE_CLAIMS = {
-    "source code review",
-    "source review",
-    "static analysis",
-    "code smell",
-    "code quality is",
-    "architecture is",
-    "architectural quality",
-    "business logic is correct",
-    "security posture",
-    "security vulnerability",
-    "user experience is",
-}
+Do not assess source-code quality, static-analysis findings, architecture, code smells, security posture, business-logic correctness, product requirements, user experience, or whole-application deployment readiness. Those areas belong to other QA evidence and other specialist agents.
 
-AUTOMATIC_MODIFICATION_CLAIMS = {
-    "automatically modify",
-    "automatically fix",
-    "auto-fix",
-    "apply this patch",
-    "generated patch",
-}
+Do not claim that an application, product, system, or release is production-ready, deployment-ready, fully validated, defect-free, secure, or safe to release. Do not write release advice, release permission, release approval, or deployment readiness. The deterministic system will add the runtime gate sentence.
 
-FAILURE_CONTRADICTIONS = {
-    "all tests passed",
-    "the test suite passed",
-    "no tests failed",
-    "no test failures",
-    "runtime validation passed",
-    "allow_release",
-}
+Do not repeat the complete deterministic test summary. Interpret what the evidence means, state the tested-scope assurance, identify residual runtime risk, and provide the next verification action.
 
-PASS_CONTRADICTIONS = {
-    "all tests failed",
-    "the test suite failed",
-    "tests are failing",
-    "runtime validation failed",
-    "block_release",
-    "release must be blocked",
-    "do not release",
-}
+If no submitted root-cause groups are provided, group_insights must be exactly an empty JSON array. Do not create placeholder group objects.
 
-INCONCLUSIVE_CONTRADICTIONS = {
-    "all tests passed",
-    "the test suite passed",
-    "all tests failed",
-    "the test suite failed",
-    "runtime validation passed",
-    "runtime validation failed",
-}
-
-BLOCK_RELEASE_CONTRADICTIONS = {
-    "allow_release",
-    "allow_with_warnings",
-    "runtime gate allows release",
-    "runtime gate permits release",
-}
-
-ALLOW_RELEASE_CONTRADICTIONS = {
-    "block_release",
-    "runtime gate blocks release",
-    "release must be blocked",
-}
+Do not generate patches, code, automatic modifications, or hidden reasoning. Do not include markdown, code fences, headings, commentary, or fields outside the required JSON contract. Keep every field concise, technically precise, auditable, and suitable for a professional pre-deployment QA report."""
 
 
-def clean_model_output(text):
-    cleaned = str(text or "").strip()
-    cleaned = re.sub(
-        r"<think>.*?</think>",
-        "",
-        cleaned,
-        flags=re.IGNORECASE | re.DOTALL,
-    ).strip()
-    cleaned = re.sub(
-        r"^```(?:json)?\s*",
-        "",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-    return cleaned.strip()
-
-
-def normalize_prose(value):
-    return " ".join(str(value or "").split()).strip()
-
-
-def extract_json_object(text):
-    cleaned = clean_model_output(text)
-    start = cleaned.find("{")
-
-    if start < 0:
-        raise ValueError(
-            "The model response did not contain a JSON object."
+def build_case_instruction(test_result, has_groups):
+    if test_result == "PASS":
+        return (
+            "Interpret the successful runtime outcome without repeating all test metrics. "
+            "Explain the assurance provided for the exercised runtime paths, state the residual "
+            "risk created by untested paths or unavailable coverage evidence, and provide one "
+            "evidence-retention or follow-up verification action. Do not write release advice, "
+            "deployment readiness, source findings, failures, defects, root causes, remediation, "
+            "or group insights. group_insights must be exactly []."
         )
 
-    depth = 0
-    in_string = False
-    escaped = False
+    if test_result == "FAIL":
+        if has_groups:
+            return (
+                "Interpret the confirmed failing runtime outcome. Explain the evidence-supported failure pattern, "
+                "tested-scope impact, residual regression risk, and prioritized manual verification. "
+                "Improve only supplied root-cause groups. Do not write release advice or add new failures, "
+                "groups, tests, files, lines, exceptions, or unsupported causes."
+            )
 
-    for index in range(start, len(cleaned)):
-        character = cleaned[index]
+        return (
+            "Interpret the confirmed failing runtime outcome using only the locked facts. Explain that detailed "
+            "root-cause grouping was not supplied and provide manual verification guidance. Do not write release "
+            "advice. group_insights must be exactly []."
+        )
 
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
+    if test_result == "NOT_RUN":
+        if has_groups:
+            return (
+                "Explain that no test outcome was established, identify the supplied execution or discovery barrier, "
+                "state why runtime confidence remains incomplete, and provide the exact action needed to obtain "
+                "executed test evidence. Do not write release advice."
+            )
 
-        if character == '"':
-            in_string = True
-        elif character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
+        return (
+            "Explain that no test outcome was established and runtime confidence remains incomplete. Provide the "
+            "exact action needed to obtain executed test evidence. Do not describe the application as passed or "
+            "failed. Do not write release advice. group_insights must be exactly []."
+        )
 
-            if depth == 0:
-                return cleaned[start:index + 1]
+    if test_result == "INCONCLUSIVE":
+        if has_groups:
+            return (
+                "Explain why the runtime outcome is inconclusive, state the effect on runtime assurance, and "
+                "provide the required rerun or evidence-collection action. Do not invent a passing or failing "
+                "result. Do not write release advice."
+            )
 
-    raise ValueError(
-        "The model response contained an incomplete JSON object."
+        return (
+            "Explain why the runtime outcome is inconclusive, state the effect on runtime assurance, and provide "
+            "the required rerun or evidence-collection action. Do not invent a passing or failing result. Do not "
+            "write release advice. group_insights must be exactly []."
+        )
+
+    return (
+        "Produce a scope-limited runtime QA interpretation grounded only in supplied evidence. Do not write release "
+        "advice. If no root-cause groups are submitted, group_insights must be exactly []."
     )
 
 
-def collect_allowed_references(base_analysis):
-    allowed = set()
+def build_required_output_contract(test_result, has_groups):
+    contract = {
+        "outcome_interpretation": (
+            "One concise sentence explaining what the validated runtime outcome means"
+        ),
+        "scope_assurance": (
+            "One concise sentence defining assurance only for the tested runtime scope"
+        ),
+        "residual_runtime_risk": (
+            "One concise sentence describing runtime risk not eliminated by the supplied evidence"
+        ),
+        "next_verification": (
+            "One concise sentence giving the next manual verification or evidence-retention action"
+        ),
+    }
 
-    for group in base_analysis.get("root_cause_groups", []):
-        for item in group.get("evidence", []):
-            for file_key, line_key in (
-                ("application_file", "application_line"),
-                ("test_file", "test_line"),
-            ):
-                file_path = item.get(file_key)
-                line = item.get(line_key)
+    if test_result == "PASS" or not has_groups:
+        contract["group_insights"] = []
+        return contract
 
-                if file_path and line:
-                    normalized_path = str(file_path).replace("\\", "/")
-                    allowed.add((normalized_path, int(line)))
-                    allowed.add(
-                        (
-                            normalized_path.lstrip("./"),
-                            int(line),
-                        )
-                    )
-
-    return allowed
-
-
-def has_unsupported_reference(text, allowed_references):
-    for match in FILE_LINE_PATTERN.finditer(text or ""):
-        path = match.group("path").replace("\\", "/")
-        line = int(match.group("line"))
-        candidates = {
-            (path, line),
-            (path.lstrip("./"), line),
+    contract["group_insights"] = [
+        {
+            "group_id": "An existing submitted group_id only",
+            "root_cause": "One concise evidence-grounded root-cause sentence",
+            "runtime_impact": "One concise tested-scope impact sentence",
+            "required_action": "One concise manual remediation and verification sentence",
         }
-
-        if not any(
-            candidate in allowed_references
-            for candidate in candidates
-        ):
-            return True
-
-    return False
-
-
-def assessment_texts(payload):
-    texts = [
-        payload.outcome_interpretation,
-        payload.scope_assurance,
-        payload.residual_runtime_risk,
-        payload.release_advice,
-        payload.next_verification,
     ]
 
-    for insight in payload.group_insights:
-        texts.extend(
-            [
-                insight.root_cause,
-                insight.runtime_impact,
-                insight.required_action,
-            ]
+    return contract
+
+
+def build_group_instruction(test_result, has_groups):
+    if test_result == "PASS" or not has_groups:
+        return (
+            "Return group_insights exactly as an empty array: []. "
+            "Do not include any object inside group_insights."
         )
 
-    return texts
-
-
-def collect_payload_text(payload):
-    return " ".join(
-        normalize_prose(item)
-        for item in assessment_texts(payload)
-    ).lower()
-
-
-def contains_phrase(text, phrases):
-    return any(phrase in text for phrase in phrases)
-
-
-def normalize_payload(payload):
-    payload.outcome_interpretation = normalize_prose(
-        payload.outcome_interpretation
-    )
-    payload.scope_assurance = normalize_prose(
-        payload.scope_assurance
-    )
-    payload.residual_runtime_risk = normalize_prose(
-        payload.residual_runtime_risk
-    )
-    payload.release_advice = normalize_prose(
-        payload.release_advice
-    )
-    payload.next_verification = normalize_prose(
-        payload.next_verification
-    )
-
-    for insight in payload.group_insights:
-        insight.root_cause = normalize_prose(
-            insight.root_cause
-        )
-        insight.runtime_impact = normalize_prose(
-            insight.runtime_impact
-        )
-        insight.required_action = normalize_prose(
-            insight.required_action
-        )
-
-    return payload
-
-
-def validate_duty_boundary(payload):
-    combined_text = collect_payload_text(payload)
-
-    if contains_phrase(combined_text, GLOBAL_RELEASE_CLAIMS):
-        raise ValueError(
-            "The model response made an unsupported whole-application release claim."
-        )
-
-    if contains_phrase(combined_text, OUT_OF_SCOPE_CLAIMS):
-        raise ValueError(
-            "The model response exceeded the Runtime Quality Intelligence Analyst duty boundary."
-        )
-
-    if contains_phrase(
-        combined_text,
-        AUTOMATIC_MODIFICATION_CLAIMS,
-    ):
-        raise ValueError(
-            "The model response proposed automatic source modification."
-        )
-
-
-def validate_semantic_consistency(payload, base_analysis):
-    combined_text = collect_payload_text(payload)
-    test_result = str(
-        base_analysis.get("test_result") or ""
-    ).upper()
-    release_gate = str(
-        base_analysis.get("release_gate") or ""
-    ).upper()
-
-    if test_result == "FAIL" and contains_phrase(
-        combined_text,
-        FAILURE_CONTRADICTIONS,
-    ):
-        raise ValueError(
-            "The model response contradicted the validated failing test result."
-        )
-
-    if test_result == "PASS" and contains_phrase(
-        combined_text,
-        PASS_CONTRADICTIONS,
-    ):
-        raise ValueError(
-            "The model response contradicted the validated passing test result."
-        )
-
-    if test_result in {"NOT_RUN", "INCONCLUSIVE"} and contains_phrase(
-        combined_text,
-        INCONCLUSIVE_CONTRADICTIONS,
-    ):
-        raise ValueError(
-            "The model response invented a conclusive test outcome."
-        )
-
-    if release_gate == "BLOCK_RELEASE" and contains_phrase(
-        combined_text,
-        BLOCK_RELEASE_CONTRADICTIONS,
-    ):
-        raise ValueError(
-            "The model response contradicted the deterministic BLOCK_RELEASE gate."
-        )
-
-    if release_gate in {
-        "ALLOW_RELEASE",
-        "ALLOW_WITH_WARNINGS",
-    } and contains_phrase(
-        combined_text,
-        ALLOW_RELEASE_CONTRADICTIONS,
-    ):
-        raise ValueError(
-            "The model response contradicted the deterministic runtime release gate."
-        )
-
-
-def validate_group_insights(payload, base_analysis):
-    test_result = str(
-        base_analysis.get("test_result") or ""
-    ).upper()
-
-    if test_result == "PASS" and payload.group_insights:
-        raise ValueError(
-            "The model response introduced root-cause insights for a passing test result."
-        )
-
-    allowed_group_ids = {
-        group.get("group_id")
-        for group in base_analysis.get("root_cause_groups", [])
-        if group.get("group_id")
-    }
-    seen_group_ids = set()
-
-    for insight in payload.group_insights:
-        if insight.group_id not in allowed_group_ids:
-            raise ValueError(
-                "The model response referenced an unknown root-cause group."
-            )
-
-        if insight.group_id in seen_group_ids:
-            raise ValueError(
-                "The model response repeated a root-cause group."
-            )
-
-        seen_group_ids.add(insight.group_id)
-
-    if not allowed_group_ids and payload.group_insights:
-        raise ValueError(
-            "The model response introduced root-cause groups without supporting evidence."
-        )
-
-
-def validate_references(payload, base_analysis):
-    allowed_references = collect_allowed_references(
-        base_analysis
-    )
-
-    if any(
-        has_unsupported_reference(
-            item,
-            allowed_references,
-        )
-        for item in assessment_texts(payload)
-    ):
-        raise ValueError(
-            "The model response introduced an unsupported file or line reference."
-        )
-
-
-def validate_summary_duplication(payload, base_analysis):
-    deterministic_summary = normalize_prose(
-        base_analysis.get("summary")
-    ).lower()
-    model_text = collect_payload_text(payload)
-
-    if not deterministic_summary or not model_text:
-        return
-
-    similarity = SequenceMatcher(
-        None,
-        deterministic_summary,
-        model_text,
-    ).ratio()
-
-    if similarity >= 0.88:
-        raise ValueError(
-            "The model response repeated the deterministic test summary instead of interpreting it."
-        )
-
-
-def validate_model_output(text, base_analysis):
-    raw_json = extract_json_object(text)
-
-    try:
-        payload = ModelAnalysisPayload.model_validate(
-            json.loads(raw_json)
-        )
-    except (json.JSONDecodeError, ValidationError) as error:
-        raise ValueError(
-            f"The model response failed schema validation: {error}"
-        ) from error
-
-    payload = normalize_payload(payload)
-
-    validate_group_insights(
-        payload,
-        base_analysis,
-    )
-    validate_references(
-        payload,
-        base_analysis,
-    )
-    validate_duty_boundary(payload)
-    validate_semantic_consistency(
-        payload,
-        base_analysis,
-    )
-    validate_summary_duplication(
-        payload,
-        base_analysis,
-    )
-
-    return payload
-
-
-def unique_prose(items):
-    result = []
-    seen = set()
-
-    for item in items:
-        value = normalize_prose(item)
-        key = value.lower()
-
-        if not value or key in seen:
-            continue
-
-        seen.add(key)
-        result.append(value)
-
-    return result
-
-
-def render_assessment(payload):
-    return " ".join(
-        unique_prose(
-            [
-                payload.outcome_interpretation,
-                payload.scope_assurance,
-                payload.residual_runtime_risk,
-                payload.release_advice,
-                payload.next_verification,
-            ]
-        )
+    return (
+        "Return group_insights only for submitted root-cause groups. "
+        "Use existing submitted group_id values only. "
+        "Do not add new group IDs or placeholder group objects."
     )
 
 
-def merge_model_output(base_analysis, payload):
-    merged = dict(base_analysis)
-    groups = [
-        dict(group)
-        for group in base_analysis.get(
-            "root_cause_groups",
-            [],
-        )
-    ]
-    insights = {
-        item.group_id: item
-        for item in payload.group_insights
-    }
+def build_analysis_messages(base_analysis):
+    configured_groups = int(os.getenv("LLM_MAX_GROUPS", "4"))
+    max_groups = min(max(configured_groups, 1), 2)
+    test_result = str(base_analysis.get("test_result") or "INCONCLUSIVE").upper()
+    release_gate = str(base_analysis.get("release_gate") or "REVIEW_REQUIRED").upper()
+    source_groups = base_analysis.get("root_cause_groups", [])
 
-    for group in groups:
-        insight = insights.get(group.get("group_id"))
-
-        if insight is None:
-            continue
-
-        group["root_cause"] = insight.root_cause
-        group["runtime_impact"] = (
-            insight.runtime_impact
-        )
-        group["required_action"] = (
-            insight.required_action
-        )
-
-    merged["root_cause_groups"] = groups
-    merged["summary"] = render_assessment(payload)
-
-    required_actions = unique_prose(
-        group.get("required_action")
-        for group in groups
-    )
-
-    merged["required_actions"] = (
-        required_actions
-        or base_analysis.get(
-            "required_actions",
-            [],
-        )
-    )
-
-    if groups:
-        merged["primary_root_cause"] = groups[0].get(
-            "root_cause"
-        )
-        merged["root_cause"] = groups[0].get(
-            "root_cause"
-        )
-        merged["runtime_impact"] = groups[0].get(
-            "runtime_impact"
-        )
-
-    verification_steps = unique_prose(
-        [
-            *base_analysis.get(
-                "verification_steps",
-                [],
-            ),
-            payload.next_verification,
+    if test_result == "PASS":
+        groups = []
+    else:
+        groups = [
+            {
+                "group_id": group.get("group_id"),
+                "category": group.get("category"),
+                "affected_tests": group.get("affected_tests", []),
+                "evidence": group.get("evidence", [])[:8],
+                "validated_root_cause": group.get("root_cause"),
+                "validated_runtime_impact": group.get("runtime_impact"),
+                "validated_required_action": group.get("required_action"),
+            }
+            for group in source_groups[:max_groups]
         ]
-    )
-    merged["verification_steps"] = verification_steps
 
-    merged["recommendation"] = (
-        merged["required_actions"][0]
-        if merged.get("required_actions")
-        else base_analysis.get("recommendation")
-    )
+    has_groups = bool(groups)
 
-    return merged
+    payload = {
+        "case_instruction": build_case_instruction(
+            test_result,
+            has_groups,
+        ),
+        "locked_facts": {
+            "execution_status": base_analysis.get("execution_status"),
+            "test_result": test_result,
+            "release_gate": release_gate,
+            "diagnosis_confidence": base_analysis.get("diagnosis_confidence"),
+            "evidence_quality": base_analysis.get("evidence_quality"),
+            "run_summary": base_analysis.get("run_summary", {}),
+            "warnings": base_analysis.get("warnings", []),
+            "limitations": base_analysis.get("limitations", []),
+        },
+        "submitted_root_cause_groups": groups,
+        "root_cause_groups_total": 0 if test_result == "PASS" else len(source_groups),
+        "root_cause_groups_submitted": len(groups),
+        "required_output": build_required_output_contract(
+            test_result,
+            has_groups,
+        ),
+    }
+
+    return [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": (
+                "Apply the case instruction and return valid JSON matching required_output exactly. "
+                "Each assessment field must add professional interpretation rather than repeat the raw metrics. "
+                "Do not output release_advice or any release/deployment approval field. "
+                f"{build_group_instruction(test_result, has_groups)}\n\n"
+                + json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ),
+        },
+    ]
