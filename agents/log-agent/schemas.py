@@ -89,16 +89,23 @@ class ModelGroupInsight(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     group_id: str = Field(min_length=1, max_length=80)
-    root_cause: str = Field(min_length=1, max_length=2000)
-    runtime_impact: str = Field(min_length=1, max_length=2000)
-    required_action: str = Field(min_length=1, max_length=2000)
+    root_cause: str = Field(min_length=10, max_length=1200)
+    runtime_impact: str = Field(min_length=10, max_length=1200)
+    required_action: str = Field(min_length=10, max_length=1200)
 
 
 class ModelAnalysisPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    overall_note: str = Field(min_length=1, max_length=3000)
-    group_insights: list[ModelGroupInsight] = Field(default_factory=list, max_length=100)
+    outcome_interpretation: str = Field(min_length=20, max_length=1000)
+    scope_assurance: str = Field(min_length=20, max_length=1000)
+    residual_runtime_risk: str = Field(min_length=20, max_length=1000)
+    release_advice: str = Field(min_length=20, max_length=1000)
+    next_verification: str = Field(min_length=20, max_length=1000)
+    group_insights: list[ModelGroupInsight] = Field(
+        default_factory=list,
+        max_length=20,
+    )
 
 
 class LogAnalysisResponse(BaseModel):
