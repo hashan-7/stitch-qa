@@ -11,40 +11,47 @@ on:
       - ".github/workflows/deploy-hf-agents.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-hf-agents-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy-log-agent:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout GitHub repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Hugging Face CLI
-        run: pip install -U huggingface_hub
+        run: python -m pip install --upgrade huggingface_hub
 
-      - name: Prepare log agent files
+      - name: Prepare Runtime Quality Intelligence Analyst files
         run: |
           mkdir -p hf-log-agent
-          cp agents/log-agent/app.py hf-log-agent/
+          cp agents/log-agent/*.py hf-log-agent/
           cp agents/log-agent/requirements.txt hf-log-agent/
           cp agents/log-agent/Dockerfile hf-log-agent/
           cp agents/log-agent/README.md hf-log-agent/
 
-      - name: Deploy log agent to Hugging Face Space
+      - name: Deploy Runtime Quality Intelligence Analyst
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf upload hashan-77/stitch-qa-log-agent hf-log-agent . --repo-type=space --delete="*" --commit-message="Deploy log agent from GitHub Actions"
+          hf upload hashan-77/stitch-qa-log-agent hf-log-agent . --repo-type=space --delete="*" --commit-message="Deploy Runtime Quality Intelligence Analyst v2.0"
 
   deploy-repair-agent:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout GitHub repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Hugging Face CLI
-        run: pip install -U huggingface_hub
+        run: python -m pip install --upgrade huggingface_hub
 
       - name: Prepare repair agent files
         run: |
@@ -65,10 +72,10 @@ jobs:
 
     steps:
       - name: Checkout GitHub repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Hugging Face CLI
-        run: pip install -U huggingface_hub
+        run: python -m pip install --upgrade huggingface_hub
 
       - name: Prepare code agent files
         run: |

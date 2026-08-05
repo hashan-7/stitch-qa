@@ -80,31 +80,88 @@ def print_source_review_result(source_review_data):
 
 
 def print_log_agent_result(agent_data):
-    console.print(f"[bold]Agent:[/bold] {agent_data.get('agent')}")
+    console.print("\n[bold magenta]Runtime Quality Intelligence Analyst[/bold magenta]")
+    console.print(f"[bold]Agent ID:[/bold] {agent_data.get('agent_id')}")
+    console.print(f"[bold]Version:[/bold] {agent_data.get('agent_version')}")
     console.print(f"[bold]Mode:[/bold] {agent_data.get('mode', 'unknown')}")
-    console.print(f"[bold]Final Status:[/bold] {agent_data.get('final_status')}")
+    console.print(f"[bold]Model:[/bold] {agent_data.get('model') or 'Deterministic fallback'}")
+    console.print(f"[bold]Execution Status:[/bold] {agent_data.get('execution_status')}")
+    console.print(f"[bold]Test Result:[/bold] {agent_data.get('test_result')}")
+    console.print(f"[bold]Release Gate:[/bold] {agent_data.get('release_gate')}")
+    console.print(f"[bold]Diagnosis Confidence:[/bold] {agent_data.get('diagnosis_confidence')}")
+    console.print(f"[bold]Evidence Quality:[/bold] {agent_data.get('evidence_quality')}")
     console.print(f"[bold]Summary:[/bold] {agent_data.get('summary')}")
-    console.print(f"[bold]Root Cause:[/bold] {agent_data.get('root_cause')}")
-    console.print(f"[bold]Recommendation:[/bold] {agent_data.get('recommendation')}")
+
+    run_summary = agent_data.get("run_summary") or {}
+    if run_summary:
+        console.print("\n[bold cyan]Validated Test Summary[/bold cyan]")
+        console.print(f"- Framework: {run_summary.get('framework')}")
+        console.print(f"- Command: {run_summary.get('command')}")
+        console.print(f"- Total: {run_summary.get('total', 0)}")
+        console.print(f"- Passed: {run_summary.get('passed', 0)}")
+        console.print(f"- Failed: {run_summary.get('failed', 0)}")
+        console.print(f"- Errors: {run_summary.get('errors', 0)}")
+        console.print(f"- Skipped: {run_summary.get('skipped', 0)}")
+        console.print(f"- Exit Code: {run_summary.get('exit_code')}")
+        console.print(f"- Duration: {run_summary.get('duration_seconds')}")
+        console.print(f"- Report Source: {run_summary.get('report_source')}")
+
+    groups = agent_data.get("root_cause_groups", [])
+    if groups:
+        console.print("\n[bold cyan]Root Cause Groups[/bold cyan]")
+        for group in groups:
+            console.print(
+                f"\n[bold]{group.get('group_id')} — {group.get('title')}[/bold]"
+            )
+            console.print(f"[bold]Category:[/bold] {group.get('category')}")
+            console.print(f"[bold]Root Cause:[/bold] {group.get('root_cause')}")
+            console.print(f"[bold]Runtime Impact:[/bold] {group.get('runtime_impact')}")
+            console.print(f"[bold]Required Action:[/bold] {group.get('required_action')}")
+            affected_tests = group.get("affected_tests", [])
+            console.print(
+                f"[bold]Affected Tests:[/bold] {format_console_list(affected_tests)}"
+            )
+            for evidence in group.get("evidence", [])[:10]:
+                application_location = evidence.get("application_file")
+                if application_location and evidence.get("application_line"):
+                    application_location = f"{application_location}:{evidence.get('application_line')}"
+                test_location = evidence.get("test_file")
+                if test_location and evidence.get("test_line"):
+                    test_location = f"{test_location}:{evidence.get('test_line')}"
+                console.print(
+                    "- Evidence: "
+                    f"Test={evidence.get('test_name') or 'Unknown'}, "
+                    f"Expected={evidence.get('expected') or 'Not available'}, "
+                    f"Actual={evidence.get('actual') or evidence.get('exception_type') or 'Not available'}, "
+                    f"Application={application_location or 'Not mapped'}, "
+                    f"Test Location={test_location or 'Not mapped'}"
+                )
+
+    console.print("\n[bold cyan]Required Actions[/bold cyan]")
+    for action in agent_data.get("required_actions", []):
+        console.print(f"- {action}")
+    if not agent_data.get("required_actions"):
+        console.print("- None")
+
+    console.print("\n[bold cyan]Verification[/bold cyan]")
+    for step in agent_data.get("verification_steps", []):
+        console.print(f"- {step}")
+    if not agent_data.get("verification_steps"):
+        console.print("- None")
+
+    if agent_data.get("warnings"):
+        console.print("\n[bold yellow]Warnings[/bold yellow]")
+        for warning in agent_data.get("warnings", []):
+            console.print(f"- {warning}")
+
+    if agent_data.get("limitations"):
+        console.print("\n[bold yellow]Limitations[/bold yellow]")
+        for limitation in agent_data.get("limitations", []):
+            console.print(f"- {limitation}")
 
     if agent_data.get("llm_error"):
-        console.print("\n[bold red]LLM Error[/bold red]")
+        console.print("\n[bold red]LLM Fallback Reason[/bold red]")
         console.print(agent_data.get("llm_error"))
-
-    console.print("\n[bold cyan]Issues[/bold cyan]")
-    for issue in agent_data.get("issues", []):
-        console.print(f"- {issue}")
-
-    if not agent_data.get("issues"):
-        console.print("- None")
-
-    console.print("\n[bold yellow]Warnings[/bold yellow]")
-    for warning in agent_data.get("warnings", []):
-        console.print(f"- {warning}")
-
-    if not agent_data.get("warnings"):
-        console.print("- None")
-
 
 def print_repair_agent_result(repair_data):
     console.print(f"[bold]Agent:[/bold] {repair_data.get('agent')}")
@@ -168,7 +225,7 @@ def print_qa_decision(qa_decision):
         f"{workflow_status.get('test_execution', 'NOT_RUN')}"
     )
     console.print(
-        f"- Agent 1 Log Analysis: "
+        f"- Runtime Quality Intelligence: "
         f"{workflow_status.get('log_analysis', 'NOT_REQUESTED')}"
     )
     console.print(
@@ -480,7 +537,7 @@ def scan(
 
         if analyze or repair or code_fix:
             console.print(
-                "\n[bold yellow]Agent 1 runtime analysis, Agent 2 repair "
+                "\n[bold yellow]Runtime Quality Intelligence analysis, Agent 2 repair "
                 "guidance, and Agent 3 runtime code guidance were not run "
                 "because no test command was executed. Agent 3 source review "
                 "was completed independently.[/bold yellow]"
@@ -528,6 +585,28 @@ def scan(
         console.print(
             f"[bold]Exit Code:[/bold] {execution_result['exit_code']}"
         )
+        runtime_evidence = execution_result.get("runtime_evidence") or {}
+        test_summary = runtime_evidence.get("test_summary") or {}
+        console.print(
+            f"[bold]Execution Status:[/bold] "
+            f"{runtime_evidence.get('execution_status', 'UNKNOWN')}"
+        )
+        console.print(
+            f"[bold]Test Result:[/bold] "
+            f"{runtime_evidence.get('test_result', 'INCONCLUSIVE')}"
+        )
+        console.print(
+            f"[bold]Structured Evidence:[/bold] "
+            f"{runtime_evidence.get('evidence_quality', 'NONE')}"
+        )
+        console.print(
+            f"[bold]Test Summary:[/bold] "
+            f"Total={test_summary.get('total', 0)}, "
+            f"Passed={test_summary.get('passed', 0)}, "
+            f"Failed={test_summary.get('failed', 0)}, "
+            f"Errors={test_summary.get('errors', 0)}, "
+            f"Skipped={test_summary.get('skipped', 0)}"
+        )
 
         console.print("\n[bold cyan]STDOUT[/bold cyan]")
         console.print(
@@ -543,7 +622,7 @@ def scan(
 
         if analyze:
             console.print(
-                "\n[bold magenta]Agent 1 Runtime Log Analysis Started"
+                "\n[bold magenta]Runtime Quality Intelligence Analyst Started"
                 "[/bold magenta]"
             )
 

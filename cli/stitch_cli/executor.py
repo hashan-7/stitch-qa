@@ -3,7 +3,12 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
+
+from stitch_cli.runtime_evidence import build_minimal_runtime_evidence, collect_runtime_evidence
+from stitch_cli.test_report_parser import discover_maven_report_files
 
 EXECUTION_POLICY = "BUILT_IN_ONLY"
 EXECUTION_STRATEGY = "ARGUMENT_LIST"
@@ -191,6 +196,9 @@ def build_result(
     timeout_seconds=None,
     failure_type=None,
     help_message=None,
+    project_path=None,
+    duration_seconds=None,
+    runtime_evidence=None,
 ):
     if skipped:
         failure_info = {
@@ -211,6 +219,19 @@ def build_result(
         enhanced_stderr = build_stderr_with_help(stderr, failure_info)
         status = "PASSED" if success else "FAILED"
 
+    if runtime_evidence is None:
+        runtime_evidence = build_minimal_runtime_evidence(
+            command=command,
+            command_profile=command_profile,
+            success=success,
+            exit_code=exit_code,
+            executed=executed,
+            skipped=skipped,
+            failure_type=failure_info.get("failure_type"),
+            help_message=failure_info.get("help_message"),
+            duration_seconds=duration_seconds,
+        )
+
     return {
         "status": status,
         "executed": executed,
@@ -230,10 +251,14 @@ def build_result(
         "validation_status": validation_status,
         "validation_error": validation_error,
         "timeout_seconds": timeout_seconds,
+        "duration_seconds": duration_seconds,
+        "project_path": str(project_path) if project_path else None,
         "failure_type": failure_info.get("failure_type"),
         "help_message": failure_info.get("help_message"),
+        "runtime_evidence": runtime_evidence,
+        "execution_status": runtime_evidence.get("execution_status"),
+        "test_result": runtime_evidence.get("test_result"),
     }
-
 
 def build_skipped_result(command, skip_reason, command_profile=None):
     validation_status = "PROFILE_VALIDATED_NOT_EXECUTED" if command_profile else "NOT_AVAILABLE"
@@ -257,6 +282,7 @@ def build_skipped_result(command, skip_reason, command_profile=None):
 def build_rejected_result(command, command_profile, validation_error):
     return build_result(
         success=False,
+        executed=False,
         exit_code=None,
         stdout="",
         stderr=validation_error,
@@ -407,6 +433,7 @@ def execute_command(
             exit_code=None,
             stdout="",
             stderr=f"Project path does not exist: {working_dir}",
+            executed=False,
             command=display_command,
             command_profile=command_profile,
             validation_status="REJECTED",
@@ -414,6 +441,7 @@ def execute_command(
             timeout_seconds=timeout_seconds,
             failure_type="INVALID_PROJECT_PATH",
             help_message="Provide an existing project directory and rerun Stitch QA.",
+            project_path=working_dir,
         )
 
     if not working_dir.is_dir():
@@ -422,6 +450,7 @@ def execute_command(
             exit_code=None,
             stdout="",
             stderr=f"Project path is not a directory: {working_dir}",
+            executed=False,
             command=display_command,
             command_profile=command_profile,
             validation_status="REJECTED",
@@ -429,6 +458,7 @@ def execute_command(
             timeout_seconds=timeout_seconds,
             failure_type="INVALID_PROJECT_PATH",
             help_message="Provide a project directory and rerun Stitch QA.",
+            project_path=working_dir,
         )
 
     if command_profile not in SUPPORTED_EXECUTION_PROFILES:
@@ -443,106 +473,214 @@ def execute_command(
     if not execution_plan.get("success"):
         failure_type = execution_plan.get("failure_type")
         help_message = execution_plan.get("help_message")
-        command = display_command
-
         return build_result(
             success=False,
             exit_code=None,
             stdout="",
             stderr=help_message or "Unable to resolve the built-in execution command.",
-            command=command,
+            executed=False,
+            command=display_command,
             command_profile=command_profile,
             validation_status="VALIDATED",
             validation_error=None,
             timeout_seconds=timeout_seconds,
             failure_type=failure_type,
             help_message=help_message,
+            project_path=working_dir,
         )
 
     command = display_command or execution_plan["command"]
-    command_args = execution_plan["command_args"]
+    base_command_args = list(execution_plan["command_args"])
     executable = execution_plan["executable"]
 
-    try:
-        completed_process = subprocess.run(
-            command_args,
-            cwd=working_dir,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
+    with tempfile.TemporaryDirectory(prefix="stitch-qa-runtime-") as artifact_dir:
+        artifact_path = Path(artifact_dir)
+        command_args = list(base_command_args)
+        pytest_report = artifact_path / "pytest-junit.xml"
 
-        return build_result(
-            success=completed_process.returncode == 0,
-            exit_code=completed_process.returncode,
-            stdout=completed_process.stdout,
-            stderr=completed_process.stderr,
-            command=command,
-            command_profile=command_profile,
-            command_args=command_args,
-            executable=executable,
-            validation_status="VALIDATED",
-            timeout_seconds=timeout_seconds,
-        )
+        if command_profile == "PYTHON_PYTEST":
+            command_args.append(f"--junitxml={pytest_report}")
 
-    except subprocess.TimeoutExpired as error:
-        stdout_text = error.stdout or ""
-        stderr_text = error.stderr or ""
+        started_at_epoch = time.time()
+        started_at_monotonic = time.monotonic()
 
-        if isinstance(stdout_text, bytes):
-            stdout_text = stdout_text.decode(errors="replace")
+        try:
+            completed_process = subprocess.run(
+                command_args,
+                cwd=working_dir,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+            duration_seconds = round(time.monotonic() - started_at_monotonic, 6)
+            failure_info = classify_execution_failure(
+                completed_process.stderr,
+                completed_process.stdout,
+                command_args,
+            )
+            report_files = []
 
-        if isinstance(stderr_text, bytes):
-            stderr_text = stderr_text.decode(errors="replace")
+            if pytest_report.is_file():
+                report_files.append(pytest_report)
+            elif command_profile in {"MAVEN_SYSTEM", "MAVEN_WRAPPER"}:
+                report_files.extend(
+                    discover_maven_report_files(working_dir, started_at_epoch)
+                )
 
-        timeout_message = f"Command timed out after {timeout_seconds} seconds."
-        stderr_text = f"{stderr_text}\n{timeout_message}".strip()
+            runtime_evidence = collect_runtime_evidence(
+                project_root=working_dir,
+                command=command,
+                command_profile=command_profile,
+                success=completed_process.returncode == 0,
+                exit_code=completed_process.returncode,
+                stdout=completed_process.stdout,
+                stderr=completed_process.stderr,
+                duration_seconds=duration_seconds,
+                report_files=report_files,
+                failure_type=failure_info.get("failure_type"),
+                help_message=failure_info.get("help_message"),
+                executed=True,
+                skipped=False,
+            )
 
-        return build_result(
-            success=False,
-            exit_code=None,
-            stdout=stdout_text,
-            stderr=stderr_text,
-            command=command,
-            command_profile=command_profile,
-            command_args=command_args,
-            executable=executable,
-            validation_status="VALIDATED",
-            timeout_seconds=timeout_seconds,
-            failure_type="COMMAND_TIMEOUT",
-            help_message=(
-                "The command took too long to finish. "
-                "Review the build for hangs or long-running operations before increasing the timeout."
-            ),
-        )
+            return build_result(
+                success=completed_process.returncode == 0,
+                exit_code=completed_process.returncode,
+                stdout=completed_process.stdout,
+                stderr=completed_process.stderr,
+                command=command,
+                command_profile=command_profile,
+                command_args=command_args,
+                executable=executable,
+                validation_status="VALIDATED",
+                timeout_seconds=timeout_seconds,
+                failure_type=failure_info.get("failure_type"),
+                help_message=failure_info.get("help_message"),
+                project_path=working_dir,
+                duration_seconds=duration_seconds,
+                runtime_evidence=runtime_evidence,
+            )
 
-    except OSError as error:
-        return build_result(
-            success=False,
-            exit_code=None,
-            stdout="",
-            stderr=str(error),
-            command=command,
-            command_profile=command_profile,
-            command_args=command_args,
-            executable=executable,
-            validation_status="VALIDATED",
-            timeout_seconds=timeout_seconds,
-        )
+        except subprocess.TimeoutExpired as error:
+            duration_seconds = round(time.monotonic() - started_at_monotonic, 6)
+            stdout_text = error.stdout or ""
+            stderr_text = error.stderr or ""
 
-    except Exception as error:
-        return build_result(
-            success=False,
-            exit_code=None,
-            stdout="",
-            stderr=str(error),
-            command=command,
-            command_profile=command_profile,
-            command_args=command_args,
-            executable=executable,
-            validation_status="VALIDATED",
-            timeout_seconds=timeout_seconds,
-            failure_type="EXECUTION_ERROR",
-            help_message="The validated test command could not be completed.",
-        )
+            if isinstance(stdout_text, bytes):
+                stdout_text = stdout_text.decode(errors="replace")
+
+            if isinstance(stderr_text, bytes):
+                stderr_text = stderr_text.decode(errors="replace")
+
+            timeout_message = f"Command timed out after {timeout_seconds} seconds."
+            stderr_text = f"{stderr_text}\n{timeout_message}".strip()
+            help_message = (
+                "The command took too long to finish. Review the build for hangs or "
+                "long-running operations before increasing the timeout."
+            )
+            runtime_evidence = collect_runtime_evidence(
+                project_root=working_dir,
+                command=command,
+                command_profile=command_profile,
+                success=False,
+                exit_code=None,
+                stdout=stdout_text,
+                stderr=stderr_text,
+                duration_seconds=duration_seconds,
+                report_files=[],
+                failure_type="COMMAND_TIMEOUT",
+                help_message=help_message,
+                executed=True,
+                skipped=False,
+            )
+
+            return build_result(
+                success=False,
+                exit_code=None,
+                stdout=stdout_text,
+                stderr=stderr_text,
+                command=command,
+                command_profile=command_profile,
+                command_args=command_args,
+                executable=executable,
+                validation_status="VALIDATED",
+                timeout_seconds=timeout_seconds,
+                failure_type="COMMAND_TIMEOUT",
+                help_message=help_message,
+                project_path=working_dir,
+                duration_seconds=duration_seconds,
+                runtime_evidence=runtime_evidence,
+            )
+
+        except OSError as error:
+            duration_seconds = round(time.monotonic() - started_at_monotonic, 6)
+            runtime_evidence = collect_runtime_evidence(
+                project_root=working_dir,
+                command=command,
+                command_profile=command_profile,
+                success=False,
+                exit_code=None,
+                stdout="",
+                stderr=str(error),
+                duration_seconds=duration_seconds,
+                report_files=[],
+                failure_type="EXECUTION_OS_ERROR",
+                help_message="The validated command could not be started by the operating system.",
+                executed=False,
+                skipped=False,
+            )
+            return build_result(
+                success=False,
+                exit_code=None,
+                stdout="",
+                stderr=str(error),
+                command=command,
+                executed=False,
+                command_profile=command_profile,
+                command_args=command_args,
+                executable=executable,
+                validation_status="VALIDATED",
+                timeout_seconds=timeout_seconds,
+                failure_type="EXECUTION_OS_ERROR",
+                help_message="The validated command could not be started by the operating system.",
+                project_path=working_dir,
+                duration_seconds=duration_seconds,
+                runtime_evidence=runtime_evidence,
+            )
+
+        except Exception as error:
+            duration_seconds = round(time.monotonic() - started_at_monotonic, 6)
+            runtime_evidence = collect_runtime_evidence(
+                project_root=working_dir,
+                command=command,
+                command_profile=command_profile,
+                success=False,
+                exit_code=None,
+                stdout="",
+                stderr=str(error),
+                duration_seconds=duration_seconds,
+                report_files=[],
+                failure_type="EXECUTION_ERROR",
+                help_message="The validated test command could not be completed.",
+                executed=False,
+                skipped=False,
+            )
+            return build_result(
+                success=False,
+                exit_code=None,
+                stdout="",
+                stderr=str(error),
+                command=command,
+                executed=False,
+                command_profile=command_profile,
+                command_args=command_args,
+                executable=executable,
+                validation_status="VALIDATED",
+                timeout_seconds=timeout_seconds,
+                failure_type="EXECUTION_ERROR",
+                help_message="The validated test command could not be completed.",
+                project_path=working_dir,
+                duration_seconds=duration_seconds,
+                runtime_evidence=runtime_evidence,
+            )

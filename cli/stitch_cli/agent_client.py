@@ -5,6 +5,10 @@ from stitch_cli.code_cli import call_code_agent, call_source_review_agent
 DEFAULT_AGENT_TIMEOUT_SECONDS = 120
 MAX_CODE_SNIPPET_CHARS = 8000
 MAX_ERROR_LOG_CHARS = 12000
+MAX_RUNTIME_AGENT_LOG_CHARS = 24000
+MAX_RUNTIME_FAILURE_RECORDS = 100
+MAX_RUNTIME_TRACE_CHARS = 1500
+MAX_RUNTIME_RAW_FAILURE_CHARS = 2000
 MAX_SOURCE_REVIEW_FILES = 100
 MAX_SOURCE_FILE_CHARS = 50000
 MAX_SOURCE_REVIEW_CHARS = 300000
@@ -20,6 +24,36 @@ def normalize_list(value):
     return [value]
 
 
+
+def build_runtime_evidence_payload(execution_result):
+    source = execution_result.get("runtime_evidence")
+    if not isinstance(source, dict):
+        return None
+
+    evidence = dict(source)
+    source_failures = normalize_list(source.get("failures"))
+    submitted_failures = []
+
+    for item in source_failures[:MAX_RUNTIME_FAILURE_RECORDS]:
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        if normalized.get("traceback_excerpt"):
+            normalized["traceback_excerpt"] = str(normalized["traceback_excerpt"])[-MAX_RUNTIME_TRACE_CHARS:]
+        if normalized.get("raw_failure"):
+            normalized["raw_failure"] = str(normalized["raw_failure"])[-MAX_RUNTIME_RAW_FAILURE_CHARS:]
+        submitted_failures.append(normalized)
+
+    total_failures = int(source.get("failure_records_total", len(source_failures)))
+    evidence["failures"] = submitted_failures
+    evidence["failure_records_total"] = total_failures
+    evidence["failure_records_submitted"] = len(submitted_failures)
+    evidence["evidence_truncated"] = total_failures > len(submitted_failures)
+    evidence["warnings"] = normalize_list(source.get("warnings"))[:100]
+    evidence["collection_errors"] = normalize_list(source.get("collection_errors"))[:50]
+    evidence["report_files"] = normalize_list(source.get("report_files"))[:100]
+    return evidence
+
 def get_failure_context(execution_result):
     return {
         "failure_type": execution_result.get("failure_type"),
@@ -28,14 +62,19 @@ def get_failure_context(execution_result):
 
 
 def get_root_cause(agent_data, execution_result):
-    if agent_data and agent_data.get("root_cause"):
-        return agent_data.get("root_cause")
+    if agent_data:
+        if agent_data.get("primary_root_cause"):
+            return agent_data.get("primary_root_cause")
+        groups = agent_data.get("root_cause_groups") or []
+        if groups and isinstance(groups[0], dict) and groups[0].get("root_cause"):
+            return groups[0].get("root_cause")
+        if agent_data.get("root_cause"):
+            return agent_data.get("root_cause")
 
     if execution_result.get("help_message"):
         return execution_result.get("help_message")
 
     return None
-
 
 def resolve_project_file(project_path, relative_file_path):
     if not relative_file_path:
@@ -301,36 +340,86 @@ def normalize_log_agent_data(data):
     if not isinstance(data, dict):
         return None
 
+    execution_status = data.get("execution_status")
+    test_result = data.get("test_result")
+    release_gate = data.get("release_gate")
     final_status = data.get("final_status")
-    if not final_status:
-        return None
+
+    if not execution_status or not test_result or not release_gate:
+        if not final_status:
+            return None
+        execution_status = "COMPLETED"
+        test_result = "PASS" if str(final_status).upper() == "PASS" else "FAIL"
+        release_gate = "ALLOW_RELEASE" if test_result == "PASS" else "BLOCK_RELEASE"
+
+    root_cause_groups = normalize_list(data.get("root_cause_groups"))
+    primary_root_cause = data.get("primary_root_cause") or data.get("root_cause")
+
+    if not primary_root_cause and root_cause_groups and isinstance(root_cause_groups[0], dict):
+        primary_root_cause = root_cause_groups[0].get("root_cause")
+
+    required_actions = normalize_list(data.get("required_actions"))
+    if not required_actions and data.get("recommendation"):
+        required_actions = [data.get("recommendation")]
+
+    verification_steps = normalize_list(data.get("verification_steps"))
 
     return {
+        "agent_id": data.get("agent_id") or "runtime-quality-analyst",
+        "display_name": data.get("display_name") or "Runtime Quality Intelligence Analyst",
+        "agent_version": data.get("agent_version") or "2.0",
         "agent": data.get("agent") or "log-agent",
         "mode": data.get("mode") or "unknown",
-        "final_status": final_status,
+        "model": data.get("model"),
+        "execution_status": execution_status,
+        "test_result": test_result,
+        "release_gate": release_gate,
+        "diagnosis_confidence": data.get("diagnosis_confidence") or "LOW",
+        "final_status": final_status or ("PASS" if release_gate in {"ALLOW_RELEASE", "ALLOW_WITH_WARNINGS"} else "FAIL"),
         "summary": data.get("summary"),
-        "root_cause": data.get("root_cause"),
-        "recommendation": data.get("recommendation"),
+        "run_summary": data.get("run_summary") if isinstance(data.get("run_summary"), dict) else {},
+        "root_cause_groups": root_cause_groups,
+        "primary_root_cause": primary_root_cause,
+        "root_cause": primary_root_cause,
+        "runtime_impact": data.get("runtime_impact"),
+        "required_actions": required_actions,
+        "recommendation": data.get("recommendation") or (required_actions[0] if required_actions else None),
+        "verification_steps": verification_steps,
         "issues": normalize_list(data.get("issues")),
         "warnings": normalize_list(data.get("warnings")),
+        "limitations": normalize_list(data.get("limitations")),
+        "evidence_quality": data.get("evidence_quality") or "NONE",
         "llm_error": data.get("llm_error"),
     }
 
-
 def build_unavailable_log_analysis(error):
     return {
+        "agent_id": "runtime-quality-analyst",
+        "display_name": "Runtime Quality Intelligence Analyst",
+        "agent_version": "2.0",
         "agent": "log-agent",
         "mode": "unavailable",
+        "model": None,
+        "execution_status": "UNKNOWN",
+        "test_result": "INCONCLUSIVE",
+        "release_gate": "REVIEW_REQUIRED",
+        "diagnosis_confidence": "LOW",
         "final_status": "UNAVAILABLE",
-        "summary": "Runtime log analysis could not be completed because Agent 1 was unavailable.",
+        "summary": "Runtime Quality Intelligence analysis could not be completed because the Runtime Quality Intelligence Analyst was unavailable.",
+        "run_summary": {},
+        "root_cause_groups": [],
+        "primary_root_cause": None,
         "root_cause": None,
-        "recommendation": "Check the Log Agent deployment and rerun the requested analysis.",
+        "runtime_impact": "Runtime QA evidence is incomplete until the Runtime Quality Intelligence Analyst becomes available or a validated fallback result is supplied.",
+        "required_actions": ["Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis."],
+        "recommendation": "Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis.",
+        "verification_steps": ["Confirm the Runtime Quality Intelligence Analyst health endpoint is available, then rerun Stitch QA."],
         "issues": [],
         "warnings": [str(error)],
+        "limitations": ["No Runtime Quality Intelligence Analyst response was available for this run."],
+        "evidence_quality": "NONE",
         "llm_error": None,
     }
-
 
 def normalize_repair_agent_data(data):
     if not isinstance(data, dict):
@@ -404,16 +493,19 @@ def build_unavailable_code_guidance(error):
 
 def analyze_logs_with_agent(agent_url, scan_result, execution_result):
     failure_context = get_failure_context(execution_result)
+    stdout = execution_result.get("stdout") or ""
+    stderr = execution_result.get("stderr") or ""
 
     payload = {
         "project_type": scan_result["project_type"],
-        "command": execution_result["command"],
-        "success": execution_result["success"],
-        "exit_code": execution_result["exit_code"],
-        "stdout": execution_result["stdout"],
-        "stderr": execution_result["stderr"],
+        "command": execution_result.get("command") or "",
+        "success": bool(execution_result.get("success")),
+        "exit_code": execution_result.get("exit_code"),
+        "stdout": stdout[-MAX_RUNTIME_AGENT_LOG_CHARS:],
+        "stderr": stderr[-MAX_RUNTIME_AGENT_LOG_CHARS:],
         "failure_type": failure_context["failure_type"],
         "help_message": failure_context["help_message"],
+        "runtime_evidence": build_runtime_evidence_payload(execution_result),
     }
 
     try:
@@ -429,7 +521,7 @@ def analyze_logs_with_agent(agent_url, scan_result, execution_result):
             return {
                 "success": False,
                 "data": None,
-                "error": "Log agent returned an invalid analysis response.",
+                "error": "Runtime Quality Intelligence Analyst returned an invalid response.",
             }
 
         return {
@@ -444,7 +536,6 @@ def analyze_logs_with_agent(agent_url, scan_result, execution_result):
             "data": None,
             "error": str(error),
         }
-
 
 def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, agent_data=None):
     failure_context = get_failure_context(execution_result)

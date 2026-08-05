@@ -1,12 +1,40 @@
 FROM python:3.11-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TOKENIZERS_PARALLELISM=false \
+    HF_HOME=/tmp/huggingface \
+    HF_MODEL=Qwen/Qwen3-1.7B \
+    HF_FALLBACK_MODEL=google/flan-t5-large \
+    MODEL_MAX_INPUT_TOKENS=3072 \
+    MODEL_MAX_NEW_TOKENS=320 \
+    MODEL_DTYPE=float32 \
+    LLM_MAX_GROUPS=8 \
+    TORCH_NUM_THREADS=2 \
+    OMP_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2
+
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY app.py .
+COPY requirements.txt .
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r requirements.txt
+
+COPY *.py ./
+
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /tmp/huggingface \
+    && chown -R appuser:appuser /app /tmp/huggingface
+
+USER appuser
 
 EXPOSE 7860
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/ready', timeout=3)"
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1", "--timeout-keep-alive", "30"]
