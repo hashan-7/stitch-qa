@@ -6,7 +6,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TOKENIZERS_PARALLELISM=false \
     HF_HOME=/tmp/huggingface \
     HF_MODEL=Qwen/Qwen3-1.7B \
-    HF_FALLBACK_MODEL=google/flan-t5-large \
     MODEL_MAX_INPUT_TOKENS=3072 \
     MODEL_MAX_NEW_TOKENS=320 \
     MODEL_DTYPE=float32 \
