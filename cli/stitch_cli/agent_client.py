@@ -1,6 +1,12 @@
 from pathlib import Path
+
 import requests
-from stitch_cli.code_cli import call_code_agent, call_source_review_agent
+
+from stitch_cli.code_cli import (
+    call_code_agent,
+    call_source_review_agent,
+)
+
 
 DEFAULT_AGENT_TIMEOUT_SECONDS = 120
 MAX_CODE_SNIPPET_CHARS = 8000
@@ -15,7 +21,10 @@ MAX_SOURCE_REVIEW_CHARS = 300000
 
 
 def normalize_list(value):
-    if isinstance(value, list):
+    if isinstance(
+        value,
+        list,
+    ):
         return value
 
     if value is None:
@@ -24,67 +33,203 @@ def normalize_list(value):
     return [value]
 
 
+def build_runtime_evidence_payload(
+    execution_result,
+):
+    source = execution_result.get(
+        "runtime_evidence"
+    )
 
-def build_runtime_evidence_payload(execution_result):
-    source = execution_result.get("runtime_evidence")
-    if not isinstance(source, dict):
+    if not isinstance(
+        source,
+        dict,
+    ):
         return None
 
-    evidence = dict(source)
-    source_failures = normalize_list(source.get("failures"))
+    evidence = dict(
+        source
+    )
+    source_failures = normalize_list(
+        source.get(
+            "failures"
+        )
+    )
     submitted_failures = []
 
-    for item in source_failures[:MAX_RUNTIME_FAILURE_RECORDS]:
-        if not isinstance(item, dict):
+    for item in source_failures[
+        :MAX_RUNTIME_FAILURE_RECORDS
+    ]:
+        if not isinstance(
+            item,
+            dict,
+        ):
             continue
-        normalized = dict(item)
-        if normalized.get("traceback_excerpt"):
-            normalized["traceback_excerpt"] = str(normalized["traceback_excerpt"])[-MAX_RUNTIME_TRACE_CHARS:]
-        if normalized.get("raw_failure"):
-            normalized["raw_failure"] = str(normalized["raw_failure"])[-MAX_RUNTIME_RAW_FAILURE_CHARS:]
-        submitted_failures.append(normalized)
 
-    total_failures = int(source.get("failure_records_total", len(source_failures)))
-    evidence["failures"] = submitted_failures
-    evidence["failure_records_total"] = total_failures
-    evidence["failure_records_submitted"] = len(submitted_failures)
-    evidence["evidence_truncated"] = total_failures > len(submitted_failures)
-    evidence["warnings"] = normalize_list(source.get("warnings"))[:100]
-    evidence["collection_errors"] = normalize_list(source.get("collection_errors"))[:50]
-    evidence["report_files"] = normalize_list(source.get("report_files"))[:100]
+        normalized = dict(
+            item
+        )
+
+        if normalized.get(
+            "traceback_excerpt"
+        ):
+            normalized[
+                "traceback_excerpt"
+            ] = str(
+                normalized[
+                    "traceback_excerpt"
+                ]
+            )[
+                -MAX_RUNTIME_TRACE_CHARS:
+            ]
+
+        if normalized.get(
+            "raw_failure"
+        ):
+            normalized[
+                "raw_failure"
+            ] = str(
+                normalized[
+                    "raw_failure"
+                ]
+            )[
+                -MAX_RUNTIME_RAW_FAILURE_CHARS:
+            ]
+
+        submitted_failures.append(
+            normalized
+        )
+
+    total_failures = int(
+        source.get(
+            "failure_records_total",
+            len(
+                source_failures
+            ),
+        )
+    )
+
+    evidence["failures"] = (
+        submitted_failures
+    )
+    evidence[
+        "failure_records_total"
+    ] = total_failures
+    evidence[
+        "failure_records_submitted"
+    ] = len(
+        submitted_failures
+    )
+    evidence[
+        "evidence_truncated"
+    ] = (
+        total_failures
+        > len(
+            submitted_failures
+        )
+    )
+    evidence["warnings"] = normalize_list(
+        source.get(
+            "warnings"
+        )
+    )[:100]
+    evidence[
+        "collection_errors"
+    ] = normalize_list(
+        source.get(
+            "collection_errors"
+        )
+    )[:50]
+    evidence["report_files"] = normalize_list(
+        source.get(
+            "report_files"
+        )
+    )[:100]
+
     return evidence
 
-def get_failure_context(execution_result):
+
+def get_failure_context(
+    execution_result,
+):
     return {
-        "failure_type": execution_result.get("failure_type"),
-        "help_message": execution_result.get("help_message"),
+        "failure_type": execution_result.get(
+            "failure_type"
+        ),
+        "help_message": execution_result.get(
+            "help_message"
+        ),
     }
 
 
-def get_root_cause(agent_data, execution_result):
+def get_root_cause(
+    agent_data,
+    execution_result,
+):
     if agent_data:
-        if agent_data.get("primary_root_cause"):
-            return agent_data.get("primary_root_cause")
-        groups = agent_data.get("root_cause_groups") or []
-        if groups and isinstance(groups[0], dict) and groups[0].get("root_cause"):
-            return groups[0].get("root_cause")
-        if agent_data.get("root_cause"):
-            return agent_data.get("root_cause")
+        if agent_data.get(
+            "primary_root_cause"
+        ):
+            return agent_data.get(
+                "primary_root_cause"
+            )
 
-    if execution_result.get("help_message"):
-        return execution_result.get("help_message")
+        groups = (
+            agent_data.get(
+                "root_cause_groups"
+            )
+            or []
+        )
+
+        if (
+            groups
+            and isinstance(
+                groups[0],
+                dict,
+            )
+            and groups[0].get(
+                "root_cause"
+            )
+        ):
+            return groups[0].get(
+                "root_cause"
+            )
+
+        if agent_data.get(
+            "root_cause"
+        ):
+            return agent_data.get(
+                "root_cause"
+            )
+
+    if execution_result.get(
+        "help_message"
+    ):
+        return execution_result.get(
+            "help_message"
+        )
 
     return None
 
-def resolve_project_file(project_path, relative_file_path):
+
+def resolve_project_file(
+    project_path,
+    relative_file_path,
+):
     if not relative_file_path:
         return None
 
-    project_root = Path(project_path).resolve()
-    absolute_path = (project_root / relative_file_path).resolve()
+    project_root = Path(
+        project_path
+    ).resolve()
+    absolute_path = (
+        project_root
+        / relative_file_path
+    ).resolve()
 
     try:
-        absolute_path.relative_to(project_root)
+        absolute_path.relative_to(
+            project_root
+        )
     except ValueError:
         return None
 
@@ -94,17 +239,31 @@ def resolve_project_file(project_path, relative_file_path):
     return absolute_path
 
 
-def read_project_file(project_path, relative_file_path):
+def read_project_file(
+    project_path,
+    relative_file_path,
+):
     try:
-        absolute_path = resolve_project_file(project_path, relative_file_path)
+        absolute_path = resolve_project_file(
+            project_path,
+            relative_file_path,
+        )
 
         if absolute_path is None:
             return None
 
-        content = absolute_path.read_text(encoding="utf-8", errors="ignore")
+        content = absolute_path.read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
 
-        if len(content) > MAX_CODE_SNIPPET_CHARS:
-            return content[-MAX_CODE_SNIPPET_CHARS:]
+        if (
+            len(content)
+            > MAX_CODE_SNIPPET_CHARS
+        ):
+            return content[
+                -MAX_CODE_SNIPPET_CHARS:
+            ]
 
         return content
 
@@ -112,9 +271,15 @@ def read_project_file(project_path, relative_file_path):
         return None
 
 
-def build_error_log(execution_result):
-    stdout = execution_result.get("stdout") or ""
-    stderr = execution_result.get("stderr") or ""
+def build_error_log(
+    execution_result,
+):
+    stdout = execution_result.get(
+        "stdout"
+    ) or ""
+    stderr = execution_result.get(
+        "stderr"
+    ) or ""
 
     combined_log = (
         "STDOUT:\n"
@@ -123,16 +288,31 @@ def build_error_log(execution_result):
         f"{stderr}"
     )
 
-    if len(combined_log) > MAX_ERROR_LOG_CHARS:
-        return combined_log[-MAX_ERROR_LOG_CHARS:]
+    if (
+        len(combined_log)
+        > MAX_ERROR_LOG_CHARS
+    ):
+        return combined_log[
+            -MAX_ERROR_LOG_CHARS:
+        ]
 
     return combined_log
 
 
-def build_source_review_payload(scan_result):
-    source_review = scan_result.get("source_review", {})
-    project_path = scan_result["project_path"]
-    source_files = source_review.get("source_files", [])
+def build_source_review_payload(
+    scan_result,
+):
+    source_review = scan_result.get(
+        "source_review",
+        {},
+    )
+    project_path = scan_result[
+        "project_path"
+    ]
+    source_files = source_review.get(
+        "source_files",
+        [],
+    )
     submitted_files = []
     omitted_files = []
     read_errors = []
@@ -140,40 +320,76 @@ def build_source_review_payload(scan_result):
     truncated_files_count = 0
 
     for relative_path in source_files:
-        if len(submitted_files) >= MAX_SOURCE_REVIEW_FILES:
-            omitted_files.append(relative_path)
+        if (
+            len(
+                submitted_files
+            )
+            >= MAX_SOURCE_REVIEW_FILES
+        ):
+            omitted_files.append(
+                relative_path
+            )
             continue
 
-        absolute_path = resolve_project_file(project_path, relative_path)
+        absolute_path = resolve_project_file(
+            project_path,
+            relative_path,
+        )
 
         if absolute_path is None:
-            read_errors.append(relative_path)
+            read_errors.append(
+                relative_path
+            )
             continue
 
         try:
-            content = absolute_path.read_text(encoding="utf-8", errors="ignore")
+            content = absolute_path.read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
         except OSError:
-            read_errors.append(relative_path)
+            read_errors.append(
+                relative_path
+            )
             continue
 
-        original_chars = len(content)
-        truncated = original_chars > MAX_SOURCE_FILE_CHARS
+        original_chars = len(
+            content
+        )
+        truncated = (
+            original_chars
+            > MAX_SOURCE_FILE_CHARS
+        )
 
         if truncated:
-            content = content[:MAX_SOURCE_FILE_CHARS]
+            content = content[
+                :MAX_SOURCE_FILE_CHARS
+            ]
 
-        remaining_chars = MAX_SOURCE_REVIEW_CHARS - submitted_chars
+        remaining_chars = (
+            MAX_SOURCE_REVIEW_CHARS
+            - submitted_chars
+        )
 
         if remaining_chars <= 0:
-            omitted_files.append(relative_path)
+            omitted_files.append(
+                relative_path
+            )
             continue
 
-        if len(content) > remaining_chars:
+        if (
+            len(content)
+            > remaining_chars
+        ):
             if remaining_chars < 1000:
-                omitted_files.append(relative_path)
+                omitted_files.append(
+                    relative_path
+                )
                 continue
 
-            content = content[:remaining_chars]
+            content = content[
+                :remaining_chars
+            ]
             truncated = True
 
         if truncated:
@@ -187,39 +403,90 @@ def build_source_review_payload(scan_result):
                 "original_chars": original_chars,
             }
         )
-        submitted_chars += len(content)
+        submitted_chars += len(
+            content
+        )
 
-    static_map = scan_result.get("static_map", {})
+    static_map = scan_result.get(
+        "static_map",
+        {},
+    )
 
     payload = {
-        "project_type": scan_result["project_type"],
-        "has_tests": bool(static_map.get("has_tests")),
+        "project_type": scan_result[
+            "project_type"
+        ],
+        "has_tests": bool(
+            static_map.get(
+                "has_tests"
+            )
+        ),
         "files": submitted_files,
-        "discovered_files_count": int(source_review.get("source_files_count", 0)),
-        "submitted_files_count": len(submitted_files),
+        "discovered_files_count": int(
+            source_review.get(
+                "source_files_count",
+                0,
+            )
+        ),
+        "submitted_files_count": len(
+            submitted_files
+        ),
         "submitted_chars": submitted_chars,
-        "truncated_files_count": truncated_files_count,
-        "omitted_files_count": len(omitted_files),
-        "read_error_files_count": len(read_errors),
+        "truncated_files_count": (
+            truncated_files_count
+        ),
+        "omitted_files_count": len(
+            omitted_files
+        ),
+        "read_error_files_count": len(
+            read_errors
+        ),
     }
 
     collection = {
-        "discovered_files_count": int(source_review.get("source_files_count", 0)),
-        "submitted_files_count": len(submitted_files),
+        "discovered_files_count": int(
+            source_review.get(
+                "source_files_count",
+                0,
+            )
+        ),
+        "submitted_files_count": len(
+            submitted_files
+        ),
         "submitted_chars": submitted_chars,
-        "truncated_files_count": truncated_files_count,
-        "omitted_files_count": len(omitted_files),
-        "read_error_files_count": len(read_errors),
+        "truncated_files_count": (
+            truncated_files_count
+        ),
+        "omitted_files_count": len(
+            omitted_files
+        ),
+        "read_error_files_count": len(
+            read_errors
+        ),
         "omitted_files": omitted_files,
         "read_error_files": read_errors,
     }
 
-    return payload, collection
+    return (
+        payload,
+        collection,
+    )
 
 
-def build_local_no_source_review(scan_result, collection):
-    source_review = scan_result.get("source_review", {})
-    warning = source_review.get("warning") or "No reviewable source files were detected."
+def build_local_no_source_review(
+    scan_result,
+    collection,
+):
+    source_review = scan_result.get(
+        "source_review",
+        {},
+    )
+    warning = (
+        source_review.get(
+            "warning"
+        )
+        or "No reviewable source files were detected."
+    )
 
     return {
         "agent": "code-agent",
@@ -239,79 +506,176 @@ def build_local_no_source_review(scan_result, collection):
         },
         "category_summary": {},
         "findings": [],
-        "warnings": [warning],
+        "warnings": [
+            warning
+        ],
         "limitations": [
             "Source-code QA review could not run because no eligible application source files were available."
         ],
-        "verification": "Confirm whether the project intentionally contains tests only, then review the runtime evidence.",
+        "verification": (
+            "Confirm whether the project intentionally contains tests only, then review the runtime evidence."
+        ),
         "llm_error": None,
         "coverage": collection,
     }
 
 
-def normalize_source_review_data(data, collection):
-    normalized = dict(data)
-    normalized["findings"] = normalize_list(data.get("findings"))
-    normalized["warnings"] = normalize_list(data.get("warnings"))
-    normalized["limitations"] = normalize_list(data.get("limitations"))
-    normalized["severity_summary"] = (
-        data.get("severity_summary")
-        if isinstance(data.get("severity_summary"), dict)
+def normalize_source_review_data(
+    data,
+    collection,
+):
+    normalized = dict(
+        data
+    )
+    normalized["findings"] = normalize_list(
+        data.get(
+            "findings"
+        )
+    )
+    normalized["warnings"] = normalize_list(
+        data.get(
+            "warnings"
+        )
+    )
+    normalized["limitations"] = normalize_list(
+        data.get(
+            "limitations"
+        )
+    )
+    normalized[
+        "severity_summary"
+    ] = (
+        data.get(
+            "severity_summary"
+        )
+        if isinstance(
+            data.get(
+                "severity_summary"
+            ),
+            dict,
+        )
         else {}
     )
-    normalized["category_summary"] = (
-        data.get("category_summary")
-        if isinstance(data.get("category_summary"), dict)
+    normalized[
+        "category_summary"
+    ] = (
+        data.get(
+            "category_summary"
+        )
+        if isinstance(
+            data.get(
+                "category_summary"
+            ),
+            dict,
+        )
         else {}
     )
-    normalized["reviewed_files_count"] = int(
-        data.get("reviewed_files_count", collection["submitted_files_count"])
+    normalized[
+        "reviewed_files_count"
+    ] = int(
+        data.get(
+            "reviewed_files_count",
+            collection[
+                "submitted_files_count"
+            ],
+        )
     )
-    normalized["findings_count"] = int(
-        data.get("findings_count", len(normalized["findings"]))
+    normalized[
+        "findings_count"
+    ] = int(
+        data.get(
+            "findings_count",
+            len(
+                normalized[
+                    "findings"
+                ]
+            ),
+        )
     )
-    normalized["coverage"] = collection
+    normalized[
+        "coverage"
+    ] = collection
+
     return normalized
 
 
-def review_source_with_agent(code_agent_url, scan_result):
-    payload, collection = build_source_review_payload(scan_result)
+def review_source_with_agent(
+    code_agent_url,
+    scan_result,
+):
+    payload, collection = build_source_review_payload(
+        scan_result
+    )
 
-    if not payload["files"]:
+    if not payload[
+        "files"
+    ]:
         return {
             "success": True,
-            "data": build_local_no_source_review(scan_result, collection),
+            "data": build_local_no_source_review(
+                scan_result,
+                collection,
+            ),
             "error": None,
         }
 
-    result = call_source_review_agent(payload, code_agent_url)
+    result = call_source_review_agent(
+        payload,
+        code_agent_url,
+    )
 
-    if not result["success"]:
+    if not result[
+        "success"
+    ]:
         return result
 
-    data = result.get("data")
+    data = result.get(
+        "data"
+    )
 
-    if not isinstance(data, dict) or not data.get("status"):
+    if (
+        not isinstance(
+            data,
+            dict,
+        )
+        or not data.get(
+            "status"
+        )
+    ):
         return {
             "success": False,
             "data": None,
-            "error": "Code agent returned an invalid source-review response.",
+            "error": (
+                "Code agent returned an invalid source-review response."
+            ),
         }
 
     return {
         "success": True,
-        "data": normalize_source_review_data(data, collection),
+        "data": normalize_source_review_data(
+            data,
+            collection,
+        ),
         "error": None,
     }
 
 
-def build_unavailable_source_review(scan_result, error):
-    source_review = scan_result.get("source_review", {})
+def build_unavailable_source_review(
+    scan_result,
+    error,
+):
+    source_review = scan_result.get(
+        "source_review",
+        {},
+    )
+
     return {
         "agent": "code-agent",
         "mode": "unavailable",
         "status": "UNAVAILABLE",
-        "summary": "Source-code QA review could not be completed because Agent 3 was unavailable.",
+        "summary": (
+            "Source-code QA review could not be completed because Agent 3 was unavailable."
+        ),
         "risk_level": "UNKNOWN",
         "release_recommendation": "QA_INCOMPLETE",
         "reviewed_files_count": 0,
@@ -319,12 +683,23 @@ def build_unavailable_source_review(scan_result, error):
         "severity_summary": {},
         "category_summary": {},
         "findings": [],
-        "warnings": [str(error)],
-        "limitations": ["No Agent 3 source-review result was available for this run."],
-        "verification": "Check the Code Agent deployment and rerun Stitch QA.",
+        "warnings": [
+            str(error)
+        ],
+        "limitations": [
+            "No Agent 3 source-review result was available for this run."
+        ],
+        "verification": (
+            "Check the Code Agent deployment and rerun Stitch QA."
+        ),
         "llm_error": None,
         "coverage": {
-            "discovered_files_count": int(source_review.get("source_files_count", 0)),
+            "discovered_files_count": int(
+                source_review.get(
+                    "source_files_count",
+                    0,
+                )
+            ),
             "submitted_files_count": 0,
             "submitted_chars": 0,
             "truncated_files_count": 0,
@@ -337,65 +712,252 @@ def build_unavailable_source_review(scan_result, error):
 
 
 def normalize_log_agent_data(data):
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
-    execution_status = data.get("execution_status")
-    test_result = data.get("test_result")
-    release_gate = data.get("release_gate")
-    final_status = data.get("final_status")
+    execution_status = data.get(
+        "execution_status"
+    )
+    test_result = data.get(
+        "test_result"
+    )
+    release_gate = data.get(
+        "release_gate"
+    )
+    final_status = data.get(
+        "final_status"
+    )
 
-    if not execution_status or not test_result or not release_gate:
+    if (
+        not execution_status
+        or not test_result
+        or not release_gate
+    ):
         if not final_status:
             return None
+
         execution_status = "COMPLETED"
-        test_result = "PASS" if str(final_status).upper() == "PASS" else "FAIL"
-        release_gate = "ALLOW_RELEASE" if test_result == "PASS" else "BLOCK_RELEASE"
+        test_result = (
+            "PASS"
+            if str(
+                final_status
+            ).upper()
+            == "PASS"
+            else "FAIL"
+        )
+        release_gate = (
+            "ALLOW_RELEASE"
+            if test_result
+            == "PASS"
+            else "BLOCK_RELEASE"
+        )
 
-    root_cause_groups = normalize_list(data.get("root_cause_groups"))
-    primary_root_cause = data.get("primary_root_cause") or data.get("root_cause")
+    root_cause_groups = normalize_list(
+        data.get(
+            "root_cause_groups"
+        )
+    )
+    primary_root_cause = (
+        data.get(
+            "primary_root_cause"
+        )
+        or data.get(
+            "root_cause"
+        )
+    )
 
-    if not primary_root_cause and root_cause_groups and isinstance(root_cause_groups[0], dict):
-        primary_root_cause = root_cause_groups[0].get("root_cause")
+    if (
+        not primary_root_cause
+        and root_cause_groups
+        and isinstance(
+            root_cause_groups[0],
+            dict,
+        )
+    ):
+        primary_root_cause = (
+            root_cause_groups[0].get(
+                "root_cause"
+            )
+        )
 
-    required_actions = normalize_list(data.get("required_actions"))
-    if not required_actions and data.get("recommendation"):
-        required_actions = [data.get("recommendation")]
+    required_actions = normalize_list(
+        data.get(
+            "required_actions"
+        )
+    )
 
-    verification_steps = normalize_list(data.get("verification_steps"))
+    if (
+        not required_actions
+        and data.get(
+            "recommendation"
+        )
+    ):
+        required_actions = [
+            data.get(
+                "recommendation"
+            )
+        ]
+
+    verification_steps = normalize_list(
+        data.get(
+            "verification_steps"
+        )
+    )
 
     return {
-        "agent_id": data.get("agent_id") or "runtime-quality-analyst",
-        "display_name": data.get("display_name") or "Runtime Quality Intelligence Analyst",
-        "agent_version": data.get("agent_version") or "2.0",
-        "agent": data.get("agent") or "log-agent",
-        "mode": data.get("mode") or "unknown",
-        "model": data.get("model"),
-        "execution_status": execution_status,
-        "test_result": test_result,
-        "release_gate": release_gate,
-        "diagnosis_confidence": data.get("diagnosis_confidence") or "LOW",
-        "final_status": final_status or ("PASS" if release_gate in {"ALLOW_RELEASE", "ALLOW_WITH_WARNINGS"} else "FAIL"),
-        "summary": data.get("summary"),
-        "run_summary": data.get("run_summary") if isinstance(data.get("run_summary"), dict) else {},
-        "root_cause_groups": root_cause_groups,
-        "primary_root_cause": primary_root_cause,
-        "root_cause": primary_root_cause,
-        "runtime_impact": data.get("runtime_impact"),
-        "required_actions": required_actions,
-        "recommendation": data.get("recommendation") or (required_actions[0] if required_actions else None),
-        "verification_steps": verification_steps,
-        "issues": normalize_list(data.get("issues")),
-        "warnings": normalize_list(data.get("warnings")),
-        "limitations": normalize_list(data.get("limitations")),
-        "evidence_quality": data.get("evidence_quality") or "NONE",
-        "llm_error": data.get("llm_error"),
+        "agent_id": (
+            data.get(
+                "agent_id"
+            )
+            or "runtime-quality-analyst"
+        ),
+        "display_name": (
+            data.get(
+                "display_name"
+            )
+            or "Runtime Quality Intelligence Analyst"
+        ),
+        "agent_version": (
+            data.get(
+                "agent_version"
+            )
+            or "2.0"
+        ),
+        "agent": (
+            data.get(
+                "agent"
+            )
+            or "log-agent"
+        ),
+        "mode": (
+            data.get(
+                "mode"
+            )
+            or "unknown"
+        ),
+        "model": data.get(
+            "model"
+        ),
+        "execution_status": (
+            execution_status
+        ),
+        "test_result": (
+            test_result
+        ),
+        "release_gate": (
+            release_gate
+        ),
+        "runtime_risk_level": (
+            data.get(
+                "runtime_risk_level"
+            )
+            or "UNKNOWN"
+        ),
+        "failure_origin": (
+            data.get(
+                "failure_origin"
+            )
+            or "NOT_ESTABLISHED"
+        ),
+        "diagnosis_confidence": (
+            data.get(
+                "diagnosis_confidence"
+            )
+            or "LOW"
+        ),
+        "final_status": (
+            final_status
+            or (
+                "PASS"
+                if release_gate
+                in {
+                    "ALLOW_RELEASE",
+                    "ALLOW_WITH_WARNINGS",
+                }
+                else "FAIL"
+            )
+        ),
+        "summary": data.get(
+            "summary"
+        ),
+        "run_summary": (
+            data.get(
+                "run_summary"
+            )
+            if isinstance(
+                data.get(
+                    "run_summary"
+                ),
+                dict,
+            )
+            else {}
+        ),
+        "root_cause_groups": (
+            root_cause_groups
+        ),
+        "primary_root_cause": (
+            primary_root_cause
+        ),
+        "root_cause": (
+            primary_root_cause
+        ),
+        "runtime_impact": data.get(
+            "runtime_impact"
+        ),
+        "required_actions": (
+            required_actions
+        ),
+        "recommendation": (
+            data.get(
+                "recommendation"
+            )
+            or (
+                required_actions[0]
+                if required_actions
+                else None
+            )
+        ),
+        "verification_steps": (
+            verification_steps
+        ),
+        "issues": normalize_list(
+            data.get(
+                "issues"
+            )
+        ),
+        "warnings": normalize_list(
+            data.get(
+                "warnings"
+            )
+        ),
+        "limitations": normalize_list(
+            data.get(
+                "limitations"
+            )
+        ),
+        "evidence_quality": (
+            data.get(
+                "evidence_quality"
+            )
+            or "NONE"
+        ),
+        "llm_error": data.get(
+            "llm_error"
+        ),
     }
 
-def build_unavailable_log_analysis(error):
+
+def build_unavailable_log_analysis(
+    error,
+):
     return {
         "agent_id": "runtime-quality-analyst",
-        "display_name": "Runtime Quality Intelligence Analyst",
+        "display_name": (
+            "Runtime Quality Intelligence Analyst"
+        ),
         "agent_version": "2.0",
         "agent": "log-agent",
         "mode": "unavailable",
@@ -403,109 +965,257 @@ def build_unavailable_log_analysis(error):
         "execution_status": "UNKNOWN",
         "test_result": "INCONCLUSIVE",
         "release_gate": "REVIEW_REQUIRED",
+        "runtime_risk_level": "UNKNOWN",
+        "failure_origin": "NOT_ESTABLISHED",
         "diagnosis_confidence": "LOW",
         "final_status": "UNAVAILABLE",
-        "summary": "Runtime Quality Intelligence analysis could not be completed because the Runtime Quality Intelligence Analyst was unavailable.",
+        "summary": (
+            "Runtime Quality Intelligence analysis could not be completed because the Runtime Quality Intelligence Analyst was unavailable."
+        ),
         "run_summary": {},
         "root_cause_groups": [],
         "primary_root_cause": None,
         "root_cause": None,
-        "runtime_impact": "Runtime QA evidence is incomplete until the Runtime Quality Intelligence Analyst becomes available or a validated fallback result is supplied.",
-        "required_actions": ["Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis."],
-        "recommendation": "Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis.",
-        "verification_steps": ["Confirm the Runtime Quality Intelligence Analyst health endpoint is available, then rerun Stitch QA."],
+        "runtime_impact": (
+            "Runtime QA evidence is incomplete until the Runtime Quality Intelligence Analyst becomes available or a validated fallback result is supplied."
+        ),
+        "required_actions": [
+            "Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis."
+        ],
+        "recommendation": (
+            "Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis."
+        ),
+        "verification_steps": [
+            "Confirm the Runtime Quality Intelligence Analyst health endpoint is available, then rerun Stitch QA."
+        ],
         "issues": [],
-        "warnings": [str(error)],
-        "limitations": ["No Runtime Quality Intelligence Analyst response was available for this run."],
+        "warnings": [
+            str(error)
+        ],
+        "limitations": [
+            "No Runtime Quality Intelligence Analyst response was available for this run."
+        ],
         "evidence_quality": "NONE",
         "llm_error": None,
     }
 
+
 def normalize_repair_agent_data(data):
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
-    if not data.get("summary") and not data.get("suggestions") and not data.get("next_action"):
+    if not data.get(
+        "status"
+    ):
         return None
 
     return {
-        "agent": data.get("agent") or "repair-agent",
-        "mode": data.get("mode") or "unknown",
-        "status": data.get("status") or "COMPLETED",
-        "risk_level": data.get("risk_level") or "UNKNOWN",
-        "auto_apply": bool(data.get("auto_apply", False)),
-        "summary": data.get("summary"),
-        "suggestions": normalize_list(data.get("suggestions")),
-        "next_action": data.get("next_action"),
-        "llm_error": data.get("llm_error"),
+        "agent": (
+            data.get(
+                "agent"
+            )
+            or "repair-agent"
+        ),
+        "mode": (
+            data.get(
+                "mode"
+            )
+            or "unknown"
+        ),
+        "status": data.get(
+            "status"
+        ),
+        "risk_level": (
+            data.get(
+                "risk_level"
+            )
+            or "UNKNOWN"
+        ),
+        "auto_apply": bool(
+            data.get(
+                "auto_apply",
+                False,
+            )
+        ),
+        "summary": data.get(
+            "summary"
+        ),
+        "suggestions": normalize_list(
+            data.get(
+                "suggestions"
+            )
+        ),
+        "next_action": data.get(
+            "next_action"
+        ),
+        "warnings": normalize_list(
+            data.get(
+                "warnings"
+            )
+        ),
+        "llm_error": data.get(
+            "llm_error"
+        ),
     }
 
 
-def build_unavailable_repair_guidance(error):
+def build_unavailable_repair_guidance(
+    error,
+):
     return {
         "agent": "repair-agent",
         "mode": "unavailable",
         "status": "UNAVAILABLE",
         "risk_level": "UNKNOWN",
         "auto_apply": False,
-        "summary": "Repair guidance could not be completed because Agent 2 was unavailable.",
+        "summary": (
+            "Repair guidance could not be completed because Agent 2 was unavailable."
+        ),
         "suggestions": [],
-        "next_action": "Check the Repair Agent deployment and rerun the requested guidance flow.",
-        "warnings": [str(error)],
+        "next_action": (
+            "Check the Repair Agent deployment and rerun Stitch QA."
+        ),
+        "warnings": [
+            str(error)
+        ],
         "llm_error": None,
     }
 
 
 def normalize_code_agent_data(data):
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return None
 
-    if not data.get("summary") and not data.get("suggested_patch") and not data.get("verification"):
+    if not data.get(
+        "status"
+    ):
         return None
 
     return {
-        "agent": data.get("agent") or "code-agent",
-        "mode": data.get("mode") or "unknown",
-        "status": data.get("status") or "COMPLETED",
-        "risk_level": data.get("risk_level") or "UNKNOWN",
-        "auto_apply": bool(data.get("auto_apply", False)),
-        "summary": data.get("summary"),
-        "suggested_patch": data.get("suggested_patch"),
-        "verification": data.get("verification"),
-        "llm_error": data.get("llm_error"),
+        "agent": (
+            data.get(
+                "agent"
+            )
+            or "code-agent"
+        ),
+        "mode": (
+            data.get(
+                "mode"
+            )
+            or "unknown"
+        ),
+        "status": data.get(
+            "status"
+        ),
+        "risk_level": (
+            data.get(
+                "risk_level"
+            )
+            or "UNKNOWN"
+        ),
+        "auto_apply": bool(
+            data.get(
+                "auto_apply",
+                False,
+            )
+        ),
+        "summary": data.get(
+            "summary"
+        ),
+        "suggested_patch": data.get(
+            "suggested_patch"
+        ),
+        "verification": data.get(
+            "verification"
+        ),
+        "warnings": normalize_list(
+            data.get(
+                "warnings"
+            )
+        ),
+        "llm_error": data.get(
+            "llm_error"
+        ),
     }
 
 
-def build_unavailable_code_guidance(error):
+def build_unavailable_code_guidance(
+    error,
+):
     return {
         "agent": "code-agent",
         "mode": "unavailable",
         "status": "UNAVAILABLE",
         "risk_level": "UNKNOWN",
         "auto_apply": False,
-        "summary": "Code-level repair guidance could not be completed because Agent 3 was unavailable.",
+        "summary": (
+            "Runtime code-repair guidance could not be completed because Agent 3 was unavailable."
+        ),
         "suggested_patch": None,
-        "verification": "Check the Code Agent deployment and rerun the requested code-guidance flow.",
-        "warnings": [str(error)],
+        "verification": (
+            "Check the Code Agent deployment and rerun Stitch QA."
+        ),
+        "warnings": [
+            str(error)
+        ],
         "llm_error": None,
     }
 
 
-def analyze_logs_with_agent(agent_url, scan_result, execution_result):
-    failure_context = get_failure_context(execution_result)
-    stdout = execution_result.get("stdout") or ""
-    stderr = execution_result.get("stderr") or ""
+def analyze_logs_with_agent(
+    agent_url,
+    scan_result,
+    execution_result,
+):
+    failure_context = get_failure_context(
+        execution_result
+    )
+    stdout = execution_result.get(
+        "stdout"
+    ) or ""
+    stderr = execution_result.get(
+        "stderr"
+    ) or ""
 
     payload = {
-        "project_type": scan_result["project_type"],
-        "command": execution_result.get("command") or "",
-        "success": bool(execution_result.get("success")),
-        "exit_code": execution_result.get("exit_code"),
-        "stdout": stdout[-MAX_RUNTIME_AGENT_LOG_CHARS:],
-        "stderr": stderr[-MAX_RUNTIME_AGENT_LOG_CHARS:],
-        "failure_type": failure_context["failure_type"],
-        "help_message": failure_context["help_message"],
-        "runtime_evidence": build_runtime_evidence_payload(execution_result),
+        "project_type": scan_result[
+            "project_type"
+        ],
+        "command": execution_result.get(
+            "command"
+        )
+        or "",
+        "success": bool(
+            execution_result.get(
+                "success"
+            )
+        ),
+        "exit_code": execution_result.get(
+            "exit_code"
+        ),
+        "stdout": stdout[
+            -MAX_RUNTIME_AGENT_LOG_CHARS:
+        ],
+        "stderr": stderr[
+            -MAX_RUNTIME_AGENT_LOG_CHARS:
+        ],
+        "failure_type": failure_context[
+            "failure_type"
+        ],
+        "help_message": failure_context[
+            "help_message"
+        ],
+        "runtime_evidence": (
+            build_runtime_evidence_payload(
+                execution_result
+            )
+        ),
     }
 
     try:
@@ -515,13 +1225,17 @@ def analyze_logs_with_agent(agent_url, scan_result, execution_result):
             timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        data = normalize_log_agent_data(response.json())
+        data = normalize_log_agent_data(
+            response.json()
+        )
 
         if data is None:
             return {
                 "success": False,
                 "data": None,
-                "error": "Runtime Quality Intelligence Analyst returned an invalid response.",
+                "error": (
+                    "Runtime Quality Intelligence Analyst returned an invalid response."
+                ),
             }
 
         return {
@@ -530,26 +1244,58 @@ def analyze_logs_with_agent(agent_url, scan_result, execution_result):
             "error": None,
         }
 
-    except (requests.exceptions.RequestException, ValueError) as error:
+    except (
+        requests.exceptions.RequestException,
+        ValueError,
+    ) as error:
         return {
             "success": False,
             "data": None,
-            "error": str(error),
+            "error": str(
+                error
+            ),
         }
 
-def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, agent_data=None):
-    failure_context = get_failure_context(execution_result)
+
+def suggest_repair_with_agent(
+    repair_agent_url,
+    scan_result,
+    execution_result,
+    agent_data=None,
+):
+    failure_context = get_failure_context(
+        execution_result
+    )
 
     payload = {
-        "project_type": scan_result["project_type"],
-        "command": execution_result["command"],
-        "success": execution_result["success"],
-        "exit_code": execution_result["exit_code"],
-        "stdout": execution_result["stdout"],
-        "stderr": execution_result["stderr"],
-        "root_cause": get_root_cause(agent_data, execution_result),
-        "failure_type": failure_context["failure_type"],
-        "help_message": failure_context["help_message"],
+        "project_type": scan_result[
+            "project_type"
+        ],
+        "command": execution_result[
+            "command"
+        ],
+        "success": execution_result[
+            "success"
+        ],
+        "exit_code": execution_result[
+            "exit_code"
+        ],
+        "stdout": execution_result[
+            "stdout"
+        ],
+        "stderr": execution_result[
+            "stderr"
+        ],
+        "root_cause": get_root_cause(
+            agent_data,
+            execution_result,
+        ),
+        "failure_type": failure_context[
+            "failure_type"
+        ],
+        "help_message": failure_context[
+            "help_message"
+        ],
     }
 
     try:
@@ -559,13 +1305,17 @@ def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, a
             timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        data = normalize_repair_agent_data(response.json())
+        data = normalize_repair_agent_data(
+            response.json()
+        )
 
         if data is None:
             return {
                 "success": False,
                 "data": None,
-                "error": "Repair agent returned an invalid guidance response.",
+                "error": (
+                    "Repair agent returned an invalid guidance response."
+                ),
             }
 
         return {
@@ -574,11 +1324,16 @@ def suggest_repair_with_agent(repair_agent_url, scan_result, execution_result, a
             "error": None,
         }
 
-    except (requests.exceptions.RequestException, ValueError) as error:
+    except (
+        requests.exceptions.RequestException,
+        ValueError,
+    ) as error:
         return {
             "success": False,
             "data": None,
-            "error": str(error),
+            "error": str(
+                error
+            ),
         }
 
 
@@ -589,47 +1344,105 @@ def suggest_code_fix_with_agent(
     agent_data=None,
     repair_data=None,
 ):
-    static_map = scan_result.get("static_map", {})
-    failure_context = get_failure_context(execution_result)
+    static_map = scan_result.get(
+        "static_map",
+        {},
+    )
+    failure_context = get_failure_context(
+        execution_result
+    )
 
-    main_file = static_map.get("main_file")
-    code_snippet = read_project_file(scan_result["project_path"], main_file)
+    main_file = static_map.get(
+        "main_file"
+    )
+    code_snippet = read_project_file(
+        scan_result[
+            "project_path"
+        ],
+        main_file,
+    )
 
-    root_cause = get_root_cause(agent_data, execution_result)
+    root_cause = get_root_cause(
+        agent_data,
+        execution_result,
+    )
 
-    if not root_cause and failure_context["help_message"]:
-        root_cause = failure_context["help_message"]
+    if (
+        not root_cause
+        and failure_context[
+            "help_message"
+        ]
+    ):
+        root_cause = failure_context[
+            "help_message"
+        ]
 
-    repair_summary = repair_data.get("summary") if repair_data else None
+    repair_summary = (
+        repair_data.get(
+            "summary"
+        )
+        if repair_data
+        else None
+    )
 
-    if not repair_summary and failure_context["help_message"]:
-        repair_summary = failure_context["help_message"]
+    if (
+        not repair_summary
+        and failure_context[
+            "help_message"
+        ]
+    ):
+        repair_summary = failure_context[
+            "help_message"
+        ]
 
     payload = {
-        "project_type": scan_result["project_type"],
+        "project_type": scan_result[
+            "project_type"
+        ],
         "file_path": main_file,
         "code_snippet": code_snippet,
-        "error_log": build_error_log(execution_result),
+        "error_log": build_error_log(
+            execution_result
+        ),
         "root_cause": root_cause,
         "repair_summary": repair_summary,
-        "failure_type": failure_context["failure_type"],
-        "help_message": failure_context["help_message"],
-        "success": execution_result["success"],
-        "exit_code": execution_result["exit_code"],
+        "failure_type": failure_context[
+            "failure_type"
+        ],
+        "help_message": failure_context[
+            "help_message"
+        ],
+        "success": execution_result[
+            "success"
+        ],
+        "exit_code": execution_result[
+            "exit_code"
+        ],
     }
 
-    result = call_code_agent(payload, code_agent_url)
+    result = call_code_agent(
+        payload,
+        code_agent_url,
+    )
 
-    if not result.get("success"):
+    if not result.get(
+        "success"
+    ):
         return result
 
-    data = normalize_code_agent_data(result.get("data"))
+    data = normalize_code_agent_data(
+        result.get(
+            "data"
+        )
+    )
 
     if data is None:
         return {
             "success": False,
             "data": None,
-            "error": "Code agent returned an invalid repair-guidance response.",
+            "error": (
+                "Code agent returned an invalid repair-guidance response."
+            ),
         }
 
     return {

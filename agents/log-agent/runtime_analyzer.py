@@ -44,6 +44,15 @@ def unique_strings(items):
     return result
 
 
+def short_text(value, limit=240):
+    text = " ".join(str(value or "").split()).strip()
+
+    if len(text) <= limit:
+        return text
+
+    return text[: limit - 3].rstrip() + "..."
+
+
 def extract_console_summary(logs):
     summary = {
         "total": 0,
@@ -286,18 +295,119 @@ def failure_signature(failure):
     )
 
 
+def failure_origin_for_category(category):
+    if category in {
+        "INPUT_VALIDATION",
+        "ASSERTION_FAILURE",
+        "RUNTIME_EXCEPTION",
+    }:
+        return "APPLICATION_DEFECT"
+
+    if category == "DEPENDENCY_FAILURE":
+        return "ENVIRONMENT"
+
+    if category in {
+        "TIMEOUT",
+        "PERMISSION_FAILURE",
+        "NETWORK_FAILURE",
+    }:
+        return "EXECUTION"
+
+    return "NOT_ESTABLISHED"
+
+
+def failure_location(failure):
+    if (
+        failure.application_file
+        and failure.application_line
+    ):
+        return (
+            f"{failure.application_file}:"
+            f"{failure.application_line}"
+        )
+
+    if failure.application_file:
+        return failure.application_file
+
+    if (
+        failure.test_file
+        and failure.test_line
+    ):
+        return (
+            f"{failure.test_file}:"
+            f"{failure.test_line}"
+        )
+
+    if failure.test_file:
+        return failure.test_file
+
+    return "an unmapped tested runtime path"
+
+
+def failure_observation(failure):
+    test_name = short_text(
+        failure.test_name
+        or failure.id
+        or "unknown test",
+        180,
+    )
+    location = short_text(
+        failure_location(failure),
+        220,
+    )
+    exception_type = normalize_exception_type(
+        failure.exception_type
+    )
+    exception_message = short_text(
+        failure.exception_message,
+        240,
+    )
+    expected = short_text(
+        failure.expected,
+        220,
+    )
+    actual = short_text(
+        failure.actual,
+        220,
+    )
+
+    observed = exception_type
+
+    if exception_message:
+        observed = (
+            f"{exception_type} "
+            f"({exception_message})"
+        )
+    elif actual:
+        observed = actual
+
+    if expected:
+        return (
+            f"{test_name} reached {location} and produced "
+            f"{observed} instead of the expected {expected} contract"
+        )
+
+    return (
+        f"{test_name} reached {location} and produced "
+        f"{observed}"
+    )
+
+
 def build_default_root_cause(failures, category):
     first = failures[0]
     exception_type = normalize_exception_type(
         first.exception_type
     )
-    expected = first.expected
-    actual = first.actual or exception_type
-    location = first.application_file
+    observations = "; ".join(
+        failure_observation(failure)
+        for failure in failures[:3]
+    )
 
-    if location and first.application_line:
-        location = (
-            f"{location}:{first.application_line}"
+    if len(failures) > 3:
+        observations += (
+            f"; {len(failures) - 3} additional affected "
+            "test paths are represented by the same validated "
+            "failure pattern"
         )
 
     if (
@@ -305,45 +415,46 @@ def build_default_root_cause(failures, category):
         and exception_type == "ZeroDivisionError"
     ):
         return (
-            "A division operation is reached without validating an input that can create a zero denominator. "
-            "The uncontrolled ZeroDivisionError violates the behavior expected by the affected tests."
+            "Boundary-input validation is missing or insufficient before an operation "
+            "that can create a zero divisor. "
+            f"{observations}. "
+            "The validated tested paths therefore violate their expected error-handling contract."
         )
 
-    if expected and actual:
-        location_text = (
-            f" at {location}"
-            if location
-            else ""
-        )
+    if category == "ASSERTION_FAILURE":
         return (
-            f"The observed behavior{location_text} does not satisfy the tested contract. "
-            f"The tests expected {expected}, but the runtime produced {actual}."
+            "The observed runtime behavior does not satisfy the validated test contract. "
+            f"{observations}."
         )
 
     if category == "DEPENDENCY_FAILURE":
         return (
-            "A required runtime dependency could not be loaded. "
-            f"The primary observed exception was {exception_type}."
+            "A required runtime dependency could not be loaded in the validated execution workflow. "
+            f"{observations}."
         )
 
     if category == "TIMEOUT":
         return (
-            "The tested execution path did not complete within the configured time limit."
+            "The validated execution path did not complete within the configured time limit. "
+            f"{observations}."
         )
 
     if category == "PERMISSION_FAILURE":
         return (
-            "The tested execution path attempted an operation without the required permission."
+            "The validated execution path could not complete under the observed permission configuration. "
+            f"{observations}."
         )
 
     if category == "NETWORK_FAILURE":
         return (
-            "The tested execution path failed while performing a network-dependent operation."
+            "The validated execution path failed while performing a network-dependent operation. "
+            f"{observations}."
         )
 
     return (
-        f"The affected tests reached an uncontrolled {exception_type} runtime failure. "
-        "The evidence identifies the failing execution path but may not prove the complete underlying defect."
+        f"The affected tested paths reached an uncontrolled {exception_type} runtime failure. "
+        f"{observations}. "
+        "The supplied evidence confirms the failing paths but may not establish every contributing implementation condition."
     )
 
 
@@ -353,33 +464,33 @@ def build_default_impact(failures, category):
     if category == "INPUT_VALIDATION":
         return (
             f"Invalid boundary inputs can terminate {affected_count} tested execution path"
-            f"{'s' if affected_count != 1 else ''} unexpectedly and violate the tested error-handling contract."
+            f"{'s' if affected_count != 1 else ''} unexpectedly and violate the validated error-handling contract."
         )
 
     if category == "ASSERTION_FAILURE":
         return (
             f"The implementation conflicts with {affected_count} validated test expectation"
-            f"{'s' if affected_count != 1 else ''}, creating tested-scope regression and release risk."
+            f"{'s' if affected_count != 1 else ''}, creating tested-scope regression and runtime release risk."
         )
 
     if category == "DEPENDENCY_FAILURE":
         return (
-            "The application or test workflow cannot complete reliably until the dependency problem is resolved."
+            "The validated runtime or test workflow cannot complete reliably until the dependency problem is resolved."
         )
 
     if category == "TIMEOUT":
         return (
-            "The workflow may exceed CI limits, remain blocked, or produce an inconclusive runtime result."
+            "The validated workflow may exceed execution limits, remain blocked, or produce an inconclusive runtime result."
         )
 
     if category == "PERMISSION_FAILURE":
         return (
-            "The affected runtime path cannot complete under the observed permission configuration."
+            "The affected validated runtime path cannot complete under the observed permission configuration."
         )
 
     if category == "NETWORK_FAILURE":
         return (
-            "The affected runtime path is unavailable or unreliable when the observed connection failure occurs."
+            "The affected validated runtime path is unavailable or unreliable when the observed connection failure occurs."
         )
 
     return (
@@ -388,42 +499,74 @@ def build_default_impact(failures, category):
 
 
 def build_default_action(failures, category):
-    first = failures[0]
+    affected_tests = unique_strings(
+        failure.test_name or failure.id
+        for failure in failures
+    )
+    affected_text = ", ".join(
+        affected_tests[:6]
+    ) or "the affected tests"
+
+    expected_contracts = unique_strings(
+        failure.expected
+        for failure in failures
+        if failure.expected
+    )
+    expected_text = ", ".join(
+        expected_contracts[:4]
+    )
 
     if category == "INPUT_VALIDATION":
+        contract_text = (
+            f" Preserve the validated {expected_text} contract."
+            if expected_text
+            else ""
+        )
         return (
-            "Add explicit boundary validation before the failing operation, preserve the tested exception contract, "
-            "then rerun the affected tests followed by the full test suite."
+            "Add explicit boundary-input validation before the failing operation for the behavior exercised by "
+            f"{affected_text}.{contract_text} "
+            "Rerun the affected tests first, then execute the complete test suite."
         )
 
-    if first.expected and first.actual:
+    if category == "ASSERTION_FAILURE":
+        contract_text = (
+            f" The validated expectation is {expected_text}."
+            if expected_text
+            else ""
+        )
         return (
-            "Correct the implementation or documented contract so the observed behavior matches the validated expectation, "
-            "then rerun the affected tests followed by the full regression suite."
+            "Align the affected implementation behavior with the validated expectations exercised by "
+            f"{affected_text}.{contract_text} "
+            "Rerun the affected tests first, then execute the complete regression suite."
         )
 
     if category == "DEPENDENCY_FAILURE":
         return (
-            "Restore the required dependency and rerun the affected tests followed by the full test suite."
+            "Restore or correctly configure the required runtime dependency for "
+            f"{affected_text}, rerun the affected tests, then execute the complete test suite."
         )
 
     if category == "TIMEOUT":
         return (
-            "Investigate the long-running operation or hang, then rerun the affected test with a justified timeout."
+            "Investigate the long-running or blocked operation represented by "
+            f"{affected_text}, establish a justified execution bound, then rerun the affected workflow."
         )
 
     if category == "PERMISSION_FAILURE":
         return (
-            "Correct the runtime permission or configuration and rerun the affected tests."
+            "Correct the runtime permission or execution configuration affecting "
+            f"{affected_text}, then rerun the affected tests and verify completion."
         )
 
     if category == "NETWORK_FAILURE":
         return (
-            "Validate the external dependency and its failure-handling path, then rerun the affected tests."
+            "Validate the external dependency and its failure-handling path for "
+            f"{affected_text}, restore the required connectivity or controlled test substitute, then rerun the affected tests."
         )
 
     return (
-        "Correct the confirmed failing runtime path and rerun the affected tests followed by the full regression suite."
+        "Correct the confirmed failing runtime behavior represented by "
+        f"{affected_text}, rerun the affected tests, then execute the complete regression suite."
     )
 
 
@@ -470,6 +613,9 @@ def build_root_cause_groups(evidence):
                     f"{count} test{'s' if count != 1 else ''}"
                 ),
                 "category": category,
+                "failure_origin": failure_origin_for_category(
+                    category
+                ),
                 "root_cause": build_default_root_cause(
                     failures,
                     category,
@@ -550,10 +696,20 @@ def build_environment_group(evidence, request):
         (
             help_message
             or "The validated execution workflow could not produce conclusive runtime evidence.",
-            "The current runtime QA evidence is incomplete and cannot establish tested-scope release confidence.",
+            "The current runtime QA evidence is incomplete and cannot establish tested-scope runtime confidence.",
             "Resolve the execution issue and rerun Stitch QA.",
         ),
     )
+
+    if failure_type in ENVIRONMENT_FAILURES:
+        category = "ENVIRONMENT"
+        failure_origin = "ENVIRONMENT"
+    elif failure_type in DISCOVERY_FAILURES:
+        category = "TEST_DISCOVERY"
+        failure_origin = "TEST_DISCOVERY"
+    else:
+        category = "EXECUTION"
+        failure_origin = "EXECUTION"
 
     return {
         "group_id": "RQI-001",
@@ -561,11 +717,8 @@ def build_environment_group(evidence, request):
             "_",
             " ",
         ).title(),
-        "category": (
-            "ENVIRONMENT"
-            if failure_type in ENVIRONMENT_FAILURES
-            else "EXECUTION"
-        ),
+        "category": category,
+        "failure_origin": failure_origin,
         "root_cause": root_cause,
         "runtime_impact": impact,
         "required_action": action,
@@ -663,6 +816,74 @@ def determine_confidence(evidence, groups):
     return "LOW"
 
 
+def determine_failure_origin(
+    evidence,
+    request,
+    groups,
+):
+    origins = unique_strings(
+        group.get("failure_origin")
+        for group in groups
+    )
+
+    if "APPLICATION_DEFECT" in origins:
+        return "APPLICATION_DEFECT"
+
+    failure_type = (
+        evidence.failure_type
+        or request.failure_type
+    )
+
+    if failure_type in ENVIRONMENT_FAILURES:
+        return "ENVIRONMENT"
+
+    if failure_type in DISCOVERY_FAILURES:
+        return "TEST_DISCOVERY"
+
+    if failure_type in TIMEOUT_FAILURES:
+        return "EXECUTION"
+
+    for origin in (
+        "ENVIRONMENT",
+        "TEST_DISCOVERY",
+        "EXECUTION",
+    ):
+        if origin in origins:
+            return origin
+
+    return "NOT_ESTABLISHED"
+
+
+def determine_runtime_risk(
+    evidence,
+    release_gate,
+    failure_origin,
+):
+    if evidence.test_result == "PASS":
+        if (
+            release_gate == "ALLOW_WITH_WARNINGS"
+            or evidence.warnings
+            or evidence.collection_errors
+        ):
+            return "MEDIUM"
+
+        return "LOW"
+
+    if evidence.test_result == "FAIL":
+        if failure_origin == "APPLICATION_DEFECT":
+            return "HIGH"
+
+        return "UNKNOWN"
+
+    if evidence.test_result in {
+        "NOT_RUN",
+        "INCONCLUSIVE",
+    }:
+        return "UNKNOWN"
+
+    return "UNKNOWN"
+
+
 def build_summary(
     evidence,
     release_gate,
@@ -677,14 +898,15 @@ def build_summary(
 
     if evidence.test_result == "PASS":
         warning_text = (
-            " Supplied warnings still require review."
+            " Supplied runtime warnings still require review."
             if evidence.warnings
             else ""
         )
+
         return (
-            f"The validated {framework} runtime workflow completed with "
-            f"{summary.total} tests, {summary.passed} passed, no confirmed failures, "
-            f"and no execution errors. The runtime gate is {release_gate} for the tested scope only."
+            f"The validated {framework} runtime test workflow completed successfully within the exercised scope: "
+            f"{summary.total} tests were executed, {summary.passed} passed, with no confirmed test failures or execution errors. "
+            f"The runtime gate is {release_gate} for the tested runtime scope only."
             f"{warning_text}"
         )
 
@@ -696,22 +918,22 @@ def build_summary(
         group_count = len(groups)
 
         return (
-            f"The validated runtime workflow produced {failed_count} failing or errored tests "
-            f"across {group_count} evidence-based root-cause group"
-            f"{'s' if group_count != 1 else ''}. The runtime gate is {release_gate} "
-            "until the confirmed failures are resolved and verified."
+            f"The validated {framework} runtime test workflow failed within the exercised scope: "
+            f"{failed_count} tests failed or errored and were organized into "
+            f"{group_count} evidence-backed root-cause group"
+            f"{'s' if group_count != 1 else ''}. "
+            f"The runtime gate is {release_gate} until the confirmed tested-path failures are resolved and verified."
         )
 
     if evidence.test_result == "NOT_RUN":
         return (
-            f"The validated command did not establish an executed test result. "
-            f"The runtime gate is {release_gate} because runtime QA evidence remains incomplete."
+            "The validated runtime test workflow did not establish an executed test result. "
+            f"The runtime gate is {release_gate} because runtime evidence for the intended tested scope remains incomplete."
         )
 
     return (
-        f"The runtime result for `{request.command}` is inconclusive. "
-        f"The runtime gate is {release_gate} until the execution barrier is resolved "
-        "and conclusive evidence is collected."
+        f"The validated runtime result for `{request.command}` is inconclusive within the intended tested scope. "
+        f"The runtime gate is {release_gate} until the execution barrier is resolved and conclusive runtime evidence is collected."
     )
 
 
@@ -801,6 +1023,16 @@ def build_base_analysis(request: LogAnalysisRequest):
         evidence,
         groups,
     )
+    failure_origin = determine_failure_origin(
+        evidence,
+        request,
+        groups,
+    )
+    runtime_risk_level = determine_runtime_risk(
+        evidence,
+        release_gate,
+        failure_origin,
+    )
     summary = build_summary(
         evidence,
         release_gate,
@@ -862,6 +1094,8 @@ def build_base_analysis(request: LogAnalysisRequest):
         "execution_status": evidence.execution_status,
         "test_result": evidence.test_result,
         "release_gate": release_gate,
+        "runtime_risk_level": runtime_risk_level,
+        "failure_origin": failure_origin,
         "diagnosis_confidence": confidence,
         "final_status": final_status,
         "summary": summary,

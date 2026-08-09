@@ -3,6 +3,23 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+RuntimeRiskLevel = Literal[
+    "LOW",
+    "MEDIUM",
+    "HIGH",
+    "CRITICAL",
+    "UNKNOWN",
+]
+
+FailureOrigin = Literal[
+    "APPLICATION_DEFECT",
+    "ENVIRONMENT",
+    "TEST_DISCOVERY",
+    "EXECUTION",
+    "NOT_ESTABLISHED",
+]
+
+
 class TestRunSummary(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -78,6 +95,7 @@ class RootCauseGroup(BaseModel):
     group_id: str = Field(min_length=1, max_length=80)
     title: str = Field(min_length=1, max_length=500)
     category: str = Field(min_length=1, max_length=200)
+    failure_origin: FailureOrigin = "NOT_ESTABLISHED"
     root_cause: str = Field(min_length=1, max_length=3000)
     runtime_impact: str = Field(min_length=1, max_length=3000)
     required_action: str = Field(min_length=1, max_length=3000)
@@ -119,6 +137,8 @@ class LogAnalysisResponse(BaseModel):
     execution_status: str
     test_result: str
     release_gate: str
+    runtime_risk_level: RuntimeRiskLevel
+    failure_origin: FailureOrigin
     diagnosis_confidence: str
     final_status: str
     summary: str

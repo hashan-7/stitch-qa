@@ -41,6 +41,12 @@ OUT_OF_SCOPE_CLAIMS = {
     "security posture",
     "security vulnerability",
     "user experience is",
+    "the application failed",
+    "application failed",
+    "the system failed",
+    "system failed",
+    "the product failed",
+    "product failed",
 }
 
 AUTOMATIC_MODIFICATION_CLAIMS = {
@@ -94,12 +100,17 @@ ALLOW_RELEASE_CONTRADICTIONS = {
 
 
 def clean_model_output(text):
-    cleaned = str(text or "").strip()
+    cleaned = str(
+        text or ""
+    ).strip()
     cleaned = re.sub(
         r"<think>.*?</think>",
         "",
         cleaned,
-        flags=re.IGNORECASE | re.DOTALL,
+        flags=(
+            re.IGNORECASE
+            | re.DOTALL
+        ),
     ).strip()
     cleaned = re.sub(
         r"^```(?:json)?\s*",
@@ -107,16 +118,26 @@ def clean_model_output(text):
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+    cleaned = re.sub(
+        r"\s*```$",
+        "",
+        cleaned,
+    )
     return cleaned.strip()
 
 
 def normalize_prose(value):
-    return " ".join(str(value or "").split()).strip()
+    return " ".join(
+        str(
+            value or ""
+        ).split()
+    ).strip()
 
 
 def extract_json_object(text):
-    cleaned = clean_model_output(text)
+    cleaned = clean_model_output(
+        text
+    )
     start = cleaned.find("{")
 
     if start < 0:
@@ -128,7 +149,10 @@ def extract_json_object(text):
     in_string = False
     escaped = False
 
-    for index in range(start, len(cleaned)):
+    for index in range(
+        start,
+        len(cleaned),
+    ):
         character = cleaned[index]
 
         if in_string:
@@ -148,61 +172,120 @@ def extract_json_object(text):
             depth -= 1
 
             if depth == 0:
-                return cleaned[start:index + 1]
+                return cleaned[
+                    start:index + 1
+                ]
 
     raise ValueError(
         "The model response contained an incomplete JSON object."
     )
 
 
-def prepare_payload_data(raw_json, base_analysis):
+def prepare_payload_data(
+    raw_json,
+    base_analysis,
+):
     try:
-        data = json.loads(raw_json)
+        data = json.loads(
+            raw_json
+        )
     except json.JSONDecodeError as error:
         raise ValueError(
             f"The model response failed JSON parsing: {error}"
         ) from error
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         raise ValueError(
             "The model response JSON root must be an object."
         )
 
-    data.pop("release_advice", None)
+    data.pop(
+        "release_advice",
+        None,
+    )
 
     allowed_group_ids = {
-        group.get("group_id")
-        for group in base_analysis.get("root_cause_groups", [])
-        if group.get("group_id")
+        group.get(
+            "group_id"
+        )
+        for group in base_analysis.get(
+            "root_cause_groups",
+            [],
+        )
+        if group.get(
+            "group_id"
+        )
     }
     test_result = str(
-        base_analysis.get("test_result") or ""
+        base_analysis.get(
+            "test_result"
+        )
+        or ""
     ).upper()
 
-    if test_result == "PASS" or not allowed_group_ids:
+    if (
+        test_result == "PASS"
+        or not allowed_group_ids
+    ):
         data["group_insights"] = []
 
     return data
 
 
-def collect_allowed_references(base_analysis):
+def collect_allowed_references(
+    base_analysis,
+):
     allowed = set()
 
-    for group in base_analysis.get("root_cause_groups", []):
-        for item in group.get("evidence", []):
+    for group in base_analysis.get(
+        "root_cause_groups",
+        [],
+    ):
+        for item in group.get(
+            "evidence",
+            [],
+        ):
             for file_key, line_key in (
-                ("application_file", "application_line"),
-                ("test_file", "test_line"),
+                (
+                    "application_file",
+                    "application_line",
+                ),
+                (
+                    "test_file",
+                    "test_line",
+                ),
             ):
-                file_path = item.get(file_key)
-                line = item.get(line_key)
+                file_path = item.get(
+                    file_key
+                )
+                line = item.get(
+                    line_key
+                )
 
-                if file_path and line:
-                    normalized_path = str(file_path).replace("\\", "/")
-                    allowed.add((normalized_path, int(line)))
+                if (
+                    file_path
+                    and line
+                ):
+                    normalized_path = str(
+                        file_path
+                    ).replace(
+                        "\\",
+                        "/",
+                    )
                     allowed.add(
                         (
-                            normalized_path.lstrip("./"),
+                            normalized_path,
+                            int(line),
+                        )
+                    )
+                    allowed.add(
+                        (
+                            normalized_path.lstrip(
+                                "./"
+                            ),
                             int(line),
                         )
                     )
@@ -210,17 +293,40 @@ def collect_allowed_references(base_analysis):
     return allowed
 
 
-def has_unsupported_reference(text, allowed_references):
-    for match in FILE_LINE_PATTERN.finditer(text or ""):
-        path = match.group("path").replace("\\", "/")
-        line = int(match.group("line"))
+def has_unsupported_reference(
+    text,
+    allowed_references,
+):
+    for match in FILE_LINE_PATTERN.finditer(
+        text or ""
+    ):
+        path = match.group(
+            "path"
+        ).replace(
+            "\\",
+            "/",
+        )
+        line = int(
+            match.group(
+                "line"
+            )
+        )
         candidates = {
-            (path, line),
-            (path.lstrip("./"), line),
+            (
+                path,
+                line,
+            ),
+            (
+                path.lstrip(
+                    "./"
+                ),
+                line,
+            ),
         }
 
         if not any(
-            candidate in allowed_references
+            candidate
+            in allowed_references
             for candidate in candidates
         ):
             return True
@@ -250,13 +356,23 @@ def assessment_texts(payload):
 
 def collect_payload_text(payload):
     return " ".join(
-        normalize_prose(item)
-        for item in assessment_texts(payload)
+        normalize_prose(
+            item
+        )
+        for item in assessment_texts(
+            payload
+        )
     ).lower()
 
 
-def contains_phrase(text, phrases):
-    return any(phrase in text for phrase in phrases)
+def contains_phrase(
+    text,
+    phrases,
+):
+    return any(
+        phrase in text
+        for phrase in phrases
+    )
 
 
 def normalize_payload(payload):
@@ -288,14 +404,22 @@ def normalize_payload(payload):
 
 
 def validate_duty_boundary(payload):
-    combined_text = collect_payload_text(payload)
+    combined_text = collect_payload_text(
+        payload
+    )
 
-    if contains_phrase(combined_text, GLOBAL_RELEASE_CLAIMS):
+    if contains_phrase(
+        combined_text,
+        GLOBAL_RELEASE_CLAIMS,
+    ):
         raise ValueError(
             "The model response made an unsupported whole-application release claim."
         )
 
-    if contains_phrase(combined_text, OUT_OF_SCOPE_CLAIMS):
+    if contains_phrase(
+        combined_text,
+        OUT_OF_SCOPE_CLAIMS,
+    ):
         raise ValueError(
             "The model response exceeded the Runtime Quality Intelligence Analyst duty boundary."
         )
@@ -309,96 +433,155 @@ def validate_duty_boundary(payload):
         )
 
 
-def validate_semantic_consistency(payload, base_analysis):
-    combined_text = collect_payload_text(payload)
+def validate_semantic_consistency(
+    payload,
+    base_analysis,
+):
+    combined_text = collect_payload_text(
+        payload
+    )
     test_result = str(
-        base_analysis.get("test_result") or ""
+        base_analysis.get(
+            "test_result"
+        )
+        or ""
     ).upper()
     release_gate = str(
-        base_analysis.get("release_gate") or ""
+        base_analysis.get(
+            "release_gate"
+        )
+        or ""
     ).upper()
 
-    if test_result == "FAIL" and contains_phrase(
-        combined_text,
-        FAILURE_CONTRADICTIONS,
+    if (
+        test_result == "FAIL"
+        and contains_phrase(
+            combined_text,
+            FAILURE_CONTRADICTIONS,
+        )
     ):
         raise ValueError(
             "The model response contradicted the validated failing test result."
         )
 
-    if test_result == "PASS" and contains_phrase(
-        combined_text,
-        PASS_CONTRADICTIONS,
+    if (
+        test_result == "PASS"
+        and contains_phrase(
+            combined_text,
+            PASS_CONTRADICTIONS,
+        )
     ):
         raise ValueError(
             "The model response contradicted the validated passing test result."
         )
 
-    if test_result in {"NOT_RUN", "INCONCLUSIVE"} and contains_phrase(
-        combined_text,
-        INCONCLUSIVE_CONTRADICTIONS,
+    if (
+        test_result in {
+            "NOT_RUN",
+            "INCONCLUSIVE",
+        }
+        and contains_phrase(
+            combined_text,
+            INCONCLUSIVE_CONTRADICTIONS,
+        )
     ):
         raise ValueError(
             "The model response invented a conclusive test outcome."
         )
 
-    if release_gate == "BLOCK_RELEASE" and contains_phrase(
-        combined_text,
-        BLOCK_RELEASE_CONTRADICTIONS,
+    if (
+        release_gate == "BLOCK_RELEASE"
+        and contains_phrase(
+            combined_text,
+            BLOCK_RELEASE_CONTRADICTIONS,
+        )
     ):
         raise ValueError(
             "The model response contradicted the deterministic BLOCK_RELEASE gate."
         )
 
-    if release_gate in {
-        "ALLOW_RELEASE",
-        "ALLOW_WITH_WARNINGS",
-    } and contains_phrase(
-        combined_text,
-        ALLOW_RELEASE_CONTRADICTIONS,
+    if (
+        release_gate in {
+            "ALLOW_RELEASE",
+            "ALLOW_WITH_WARNINGS",
+        }
+        and contains_phrase(
+            combined_text,
+            ALLOW_RELEASE_CONTRADICTIONS,
+        )
     ):
         raise ValueError(
             "The model response contradicted the deterministic runtime release gate."
         )
 
 
-def validate_group_insights(payload, base_analysis):
+def validate_group_insights(
+    payload,
+    base_analysis,
+):
     test_result = str(
-        base_analysis.get("test_result") or ""
+        base_analysis.get(
+            "test_result"
+        )
+        or ""
     ).upper()
 
-    if test_result == "PASS" and payload.group_insights:
+    if (
+        test_result == "PASS"
+        and payload.group_insights
+    ):
         raise ValueError(
             "The model response introduced root-cause insights for a passing test result."
         )
 
     allowed_group_ids = {
-        group.get("group_id")
-        for group in base_analysis.get("root_cause_groups", [])
-        if group.get("group_id")
+        group.get(
+            "group_id"
+        )
+        for group in base_analysis.get(
+            "root_cause_groups",
+            [],
+        )
+        if group.get(
+            "group_id"
+        )
     }
     seen_group_ids = set()
 
     for insight in payload.group_insights:
-        if insight.group_id not in allowed_group_ids:
+        if (
+            insight.group_id
+            not in allowed_group_ids
+        ):
             raise ValueError(
                 "The model response referenced an unknown root-cause group."
             )
 
-        if insight.group_id in seen_group_ids:
+        if (
+            insight.group_id
+            in seen_group_ids
+        ):
             raise ValueError(
                 "The model response repeated a root-cause group."
             )
 
-        seen_group_ids.add(insight.group_id)
+        seen_group_ids.add(
+            insight.group_id
+        )
 
-    if not allowed_group_ids and payload.group_insights:
+    if (
+        not allowed_group_ids
+        and payload.group_insights
+    ):
         raise ValueError(
             "The model response introduced root-cause groups without supporting evidence."
         )
 
 
-def validate_references(payload, base_analysis):
+def validate_references(
+    payload,
+    base_analysis,
+):
     allowed_references = collect_allowed_references(
         base_analysis
     )
@@ -408,20 +591,32 @@ def validate_references(payload, base_analysis):
             item,
             allowed_references,
         )
-        for item in assessment_texts(payload)
+        for item in assessment_texts(
+            payload
+        )
     ):
         raise ValueError(
             "The model response introduced an unsupported file or line reference."
         )
 
 
-def validate_summary_duplication(payload, base_analysis):
+def validate_summary_duplication(
+    payload,
+    base_analysis,
+):
     deterministic_summary = normalize_prose(
-        base_analysis.get("summary")
+        base_analysis.get(
+            "summary"
+        )
     ).lower()
-    model_text = collect_payload_text(payload)
+    model_text = collect_payload_text(
+        payload
+    )
 
-    if not deterministic_summary or not model_text:
+    if (
+        not deterministic_summary
+        or not model_text
+    ):
         return
 
     similarity = SequenceMatcher(
@@ -436,21 +631,30 @@ def validate_summary_duplication(payload, base_analysis):
         )
 
 
-def validate_model_output(text, base_analysis):
-    raw_json = extract_json_object(text)
+def validate_model_output(
+    text,
+    base_analysis,
+):
+    raw_json = extract_json_object(
+        text
+    )
     data = prepare_payload_data(
         raw_json,
         base_analysis,
     )
 
     try:
-        payload = ModelAnalysisPayload.model_validate(data)
+        payload = ModelAnalysisPayload.model_validate(
+            data
+        )
     except ValidationError as error:
         raise ValueError(
             f"The model response failed schema validation: {error}"
         ) from error
 
-    payload = normalize_payload(payload)
+    payload = normalize_payload(
+        payload
+    )
 
     validate_group_insights(
         payload,
@@ -460,7 +664,9 @@ def validate_model_output(text, base_analysis):
         payload,
         base_analysis,
     )
-    validate_duty_boundary(payload)
+    validate_duty_boundary(
+        payload
+    )
     validate_semantic_consistency(
         payload,
         base_analysis,
@@ -478,24 +684,41 @@ def unique_prose(items):
     seen = set()
 
     for item in items:
-        value = normalize_prose(item)
+        value = normalize_prose(
+            item
+        )
         key = value.lower()
 
-        if not value or key in seen:
+        if (
+            not value
+            or key in seen
+        ):
             continue
 
-        seen.add(key)
-        result.append(value)
+        seen.add(
+            key
+        )
+        result.append(
+            value
+        )
 
     return result
 
 
-def deterministic_release_advice(base_analysis):
+def deterministic_release_advice(
+    base_analysis,
+):
     release_gate = str(
-        base_analysis.get("release_gate") or "REVIEW_REQUIRED"
+        base_analysis.get(
+            "release_gate"
+        )
+        or "REVIEW_REQUIRED"
     ).upper()
     test_result = str(
-        base_analysis.get("test_result") or "INCONCLUSIVE"
+        base_analysis.get(
+            "test_result"
+        )
+        or "INCONCLUSIVE"
     ).upper()
 
     if release_gate == "ALLOW_RELEASE":
@@ -512,8 +735,8 @@ def deterministic_release_advice(base_analysis):
 
     if release_gate == "BLOCK_RELEASE":
         return (
-            "The runtime gate is BLOCK_RELEASE because confirmed runtime failures require resolution "
-            "and verification before release consideration."
+            "The runtime gate is BLOCK_RELEASE because confirmed tested-path runtime failures "
+            "require resolution and verification before release consideration."
         )
 
     if test_result == "NOT_RUN":
@@ -523,7 +746,7 @@ def deterministic_release_advice(base_analysis):
 
     if test_result == "INCONCLUSIVE":
         return (
-            "The runtime gate is REVIEW_REQUIRED because the runtime evidence is inconclusive."
+            "The runtime gate is REVIEW_REQUIRED because the supplied runtime evidence is inconclusive."
         )
 
     return (
@@ -531,22 +754,32 @@ def deterministic_release_advice(base_analysis):
     )
 
 
-def render_assessment(payload, base_analysis):
+def render_assessment(
+    payload,
+    base_analysis,
+):
     return " ".join(
         unique_prose(
             [
                 payload.outcome_interpretation,
                 payload.scope_assurance,
                 payload.residual_runtime_risk,
-                deterministic_release_advice(base_analysis),
+                deterministic_release_advice(
+                    base_analysis
+                ),
                 payload.next_verification,
             ]
         )
     )
 
 
-def merge_model_output(base_analysis, payload):
-    merged = dict(base_analysis)
+def merge_model_output(
+    base_analysis,
+    payload,
+):
+    merged = dict(
+        base_analysis
+    )
     groups = [
         dict(group)
         for group in base_analysis.get(
@@ -560,12 +793,18 @@ def merge_model_output(base_analysis, payload):
     }
 
     for group in groups:
-        insight = insights.get(group.get("group_id"))
+        insight = insights.get(
+            group.get(
+                "group_id"
+            )
+        )
 
         if insight is None:
             continue
 
-        group["root_cause"] = insight.root_cause
+        group["root_cause"] = (
+            insight.root_cause
+        )
         group["runtime_impact"] = (
             insight.runtime_impact
         )
@@ -580,7 +819,9 @@ def merge_model_output(base_analysis, payload):
     )
 
     required_actions = unique_prose(
-        group.get("required_action")
+        group.get(
+            "required_action"
+        )
         for group in groups
     )
 
@@ -593,14 +834,20 @@ def merge_model_output(base_analysis, payload):
     )
 
     if groups:
-        merged["primary_root_cause"] = groups[0].get(
-            "root_cause"
+        merged["primary_root_cause"] = (
+            groups[0].get(
+                "root_cause"
+            )
         )
-        merged["root_cause"] = groups[0].get(
-            "root_cause"
+        merged["root_cause"] = (
+            groups[0].get(
+                "root_cause"
+            )
         )
-        merged["runtime_impact"] = groups[0].get(
-            "runtime_impact"
+        merged["runtime_impact"] = (
+            groups[0].get(
+                "runtime_impact"
+            )
         )
 
     verification_steps = unique_prose(
@@ -612,12 +859,18 @@ def merge_model_output(base_analysis, payload):
             payload.next_verification,
         ]
     )
-    merged["verification_steps"] = verification_steps
+    merged["verification_steps"] = (
+        verification_steps
+    )
 
     merged["recommendation"] = (
         merged["required_actions"][0]
-        if merged.get("required_actions")
-        else base_analysis.get("recommendation")
+        if merged.get(
+            "required_actions"
+        )
+        else base_analysis.get(
+            "recommendation"
+        )
     )
 
     return merged

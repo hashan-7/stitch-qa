@@ -4,11 +4,13 @@ import os
 
 SYSTEM_PROMPT = """You are Stitch QA's Runtime Quality Intelligence Analyst, a senior evidence-based runtime QA specialist. Your duty is limited to interpreting supplied runtime execution and automated test evidence. Return exactly one valid JSON object and nothing else.
 
-Locked facts are authoritative. Never invent, modify, reinterpret, or contradict test counts, test names, exception types, file paths, line numbers, commands, exit codes, execution outcomes, evidence quality, confidence levels, or runtime release gates.
+Locked facts are authoritative. Never invent, modify, reinterpret, or contradict test counts, test names, exception types, exception messages, expected-versus-actual values, file paths, line numbers, commands, exit codes, execution outcomes, evidence quality, confidence levels, runtime risk levels, failure origins, or runtime release gates.
 
 Do not assess source-code quality, static-analysis findings, architecture, code smells, security posture, business-logic correctness, product requirements, user experience, or whole-application deployment readiness. Those areas belong to other QA evidence and other specialist agents.
 
-Do not claim that an application, product, system, or release is production-ready, deployment-ready, fully validated, defect-free, secure, or safe to release. Do not write release advice, release permission, release approval, or deployment readiness. The deterministic system will add the runtime gate sentence.
+Do not claim that an application, product, system, or release is production-ready, deployment-ready, fully validated, defect-free, secure, or safe to release. Do not describe the whole application, product, or system as failed when only a validated runtime workflow or tested path failed. Describe only the validated runtime workflow, tested paths, or supplied evidence.
+
+Do not write release advice, release permission, release approval, or deployment readiness. The deterministic system will add the runtime gate sentence.
 
 Do not repeat the complete deterministic test summary. Interpret what the evidence means, state the tested-scope assurance, identify residual runtime risk, and provide the next verification action.
 
@@ -31,16 +33,19 @@ def build_case_instruction(test_result, has_groups):
     if test_result == "FAIL":
         if has_groups:
             return (
-                "Interpret the confirmed failing runtime outcome. Explain the evidence-supported failure pattern, "
-                "tested-scope impact, residual regression risk, and prioritized manual verification. "
-                "Improve only supplied root-cause groups. Do not write release advice or add new failures, "
-                "groups, tests, files, lines, exceptions, or unsupported causes."
+                "Interpret the confirmed failing runtime outcome using the supplied exception types, "
+                "exception messages, expected-versus-actual behavior, affected tests, and mapped locations "
+                "when available. Explain the evidence-supported failure pattern, tested-scope impact, "
+                "residual regression risk, and prioritized manual verification. Improve only supplied "
+                "root-cause groups. Do not describe the whole application or system as failed. Do not write "
+                "release advice or add new failures, groups, tests, files, lines, exceptions, or unsupported causes."
             )
 
         return (
             "Interpret the confirmed failing runtime outcome using only the locked facts. Explain that detailed "
-            "root-cause grouping was not supplied and provide manual verification guidance. Do not write release "
-            "advice. group_insights must be exactly []."
+            "root-cause grouping was not supplied and provide manual verification guidance. Describe only the "
+            "validated runtime workflow or tested scope as failed. Do not write release advice. "
+            "group_insights must be exactly []."
         )
 
     if test_result == "NOT_RUN":
@@ -100,7 +105,7 @@ def build_required_output_contract(test_result, has_groups):
     contract["group_insights"] = [
         {
             "group_id": "An existing submitted group_id only",
-            "root_cause": "One concise evidence-grounded root-cause sentence",
+            "root_cause": "One concise evidence-grounded root-cause sentence using supplied failure evidence",
             "runtime_impact": "One concise tested-scope impact sentence",
             "required_action": "One concise manual remediation and verification sentence",
         }
@@ -124,24 +129,67 @@ def build_group_instruction(test_result, has_groups):
 
 
 def build_analysis_messages(base_analysis):
-    configured_groups = int(os.getenv("LLM_MAX_GROUPS", "4"))
-    max_groups = min(max(configured_groups, 1), 2)
-    test_result = str(base_analysis.get("test_result") or "INCONCLUSIVE").upper()
-    release_gate = str(base_analysis.get("release_gate") or "REVIEW_REQUIRED").upper()
-    source_groups = base_analysis.get("root_cause_groups", [])
+    configured_groups = int(
+        os.getenv(
+            "LLM_MAX_GROUPS",
+            "4",
+        )
+    )
+    max_groups = min(
+        max(
+            configured_groups,
+            1,
+        ),
+        2,
+    )
+    test_result = str(
+        base_analysis.get(
+            "test_result"
+        )
+        or "INCONCLUSIVE"
+    ).upper()
+    release_gate = str(
+        base_analysis.get(
+            "release_gate"
+        )
+        or "REVIEW_REQUIRED"
+    ).upper()
+    source_groups = base_analysis.get(
+        "root_cause_groups",
+        [],
+    )
 
     if test_result == "PASS":
         groups = []
     else:
         groups = [
             {
-                "group_id": group.get("group_id"),
-                "category": group.get("category"),
-                "affected_tests": group.get("affected_tests", []),
-                "evidence": group.get("evidence", [])[:8],
-                "validated_root_cause": group.get("root_cause"),
-                "validated_runtime_impact": group.get("runtime_impact"),
-                "validated_required_action": group.get("required_action"),
+                "group_id": group.get(
+                    "group_id"
+                ),
+                "category": group.get(
+                    "category"
+                ),
+                "failure_origin": group.get(
+                    "failure_origin"
+                ),
+                "affected_tests": group.get(
+                    "affected_tests",
+                    [],
+                ),
+                "evidence": group.get(
+                    "evidence",
+                    [],
+                )[:8],
+                "validated_root_cause": group.get(
+                    "root_cause"
+                ),
+                "validated_runtime_impact": group.get(
+                    "runtime_impact"
+                ),
+                "validated_required_action": group.get(
+                    "required_action"
+                ),
             }
             for group in source_groups[:max_groups]
         ]
@@ -154,18 +202,45 @@ def build_analysis_messages(base_analysis):
             has_groups,
         ),
         "locked_facts": {
-            "execution_status": base_analysis.get("execution_status"),
+            "execution_status": base_analysis.get(
+                "execution_status"
+            ),
             "test_result": test_result,
             "release_gate": release_gate,
-            "diagnosis_confidence": base_analysis.get("diagnosis_confidence"),
-            "evidence_quality": base_analysis.get("evidence_quality"),
-            "run_summary": base_analysis.get("run_summary", {}),
-            "warnings": base_analysis.get("warnings", []),
-            "limitations": base_analysis.get("limitations", []),
+            "runtime_risk_level": base_analysis.get(
+                "runtime_risk_level"
+            ),
+            "failure_origin": base_analysis.get(
+                "failure_origin"
+            ),
+            "diagnosis_confidence": base_analysis.get(
+                "diagnosis_confidence"
+            ),
+            "evidence_quality": base_analysis.get(
+                "evidence_quality"
+            ),
+            "run_summary": base_analysis.get(
+                "run_summary",
+                {},
+            ),
+            "warnings": base_analysis.get(
+                "warnings",
+                [],
+            ),
+            "limitations": base_analysis.get(
+                "limitations",
+                [],
+            ),
         },
         "submitted_root_cause_groups": groups,
-        "root_cause_groups_total": 0 if test_result == "PASS" else len(source_groups),
-        "root_cause_groups_submitted": len(groups),
+        "root_cause_groups_total": (
+            0
+            if test_result == "PASS"
+            else len(source_groups)
+        ),
+        "root_cause_groups_submitted": len(
+            groups
+        ),
         "required_output": build_required_output_contract(
             test_result,
             has_groups,
@@ -182,12 +257,17 @@ def build_analysis_messages(base_analysis):
             "content": (
                 "Apply the case instruction and return valid JSON matching required_output exactly. "
                 "Each assessment field must add professional interpretation rather than repeat the raw metrics. "
-                "Do not output release_advice or any release/deployment approval field. "
+                "Use supplied exception messages and expected-versus-actual evidence when they materially improve "
+                "the precision of a failure explanation. Do not output release_advice or any release/deployment "
+                "approval field. "
                 f"{build_group_instruction(test_result, has_groups)}\n\n"
                 + json.dumps(
                     payload,
                     ensure_ascii=False,
-                    separators=(",", ":"),
+                    separators=(
+                        ",",
+                        ":",
+                    ),
                 )
             ),
         },
