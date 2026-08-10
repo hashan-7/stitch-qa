@@ -8,90 +8,69 @@ import time
 MODEL_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "s": {"type": "string"},
-        "o": {
-            "type": "string",
-            "enum": [
-                "APPLICATION_DEFECT",
-                "ENVIRONMENT",
-                "TEST_DISCOVERY",
-                "EXECUTION",
-                "NOT_ESTABLISHED",
-            ],
-        },
-        "r": {
-            "type": "string",
-            "enum": [
-                "LOW",
-                "MEDIUM",
-                "HIGH",
-                "CRITICAL",
-                "UNKNOWN",
-            ],
-        },
-        "c": {
-            "type": "string",
-            "enum": [
-                "HIGH",
-                "MEDIUM",
-                "LOW",
-            ],
-        },
-        "v": {"type": "string"},
-        "x": {
+        "o": {"type": "string", "enum": ["A", "E", "D", "X", "N"]},
+        "r": {"type": "string", "enum": ["L", "M", "H", "C", "U"]},
+        "q": {"type": "string", "enum": ["H", "M", "L"]},
+        "g": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
                     "f": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "items": {"type": "integer", "minimum": 1, "maximum": 16},
                     },
                     "k": {"type": "string"},
-                    "o": {
-                        "type": "string",
-                        "enum": [
-                            "APPLICATION_DEFECT",
-                            "ENVIRONMENT",
-                            "TEST_DISCOVERY",
-                            "EXECUTION",
-                            "NOT_ESTABLISHED",
-                        ],
-                    },
                     "c": {"type": "string"},
                     "i": {"type": "string"},
                     "a": {"type": "string"},
                 },
-                "required": ["f", "k", "o", "c", "i", "a"],
+                "required": ["f", "k", "c", "i", "a"],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["s", "o", "r", "c", "v", "x"],
+    "required": ["o", "r", "q", "g"],
     "additionalProperties": False,
 }
 
 
-
 def env_bool(name, default):
     value = os.getenv(name)
-
     if value is None:
         return bool(default)
-
-    return value.strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def safe_float(value, default):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
+def json_object_complete(text):
+    value = str(text or "").lstrip()
+    if not value.startswith("{"):
+        return False
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index, character in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return not value[index + 1 :].strip()
+
+    return False
 
 
 class ModelService:
@@ -108,10 +87,7 @@ class ModelService:
             "HF_MODEL_REVISION",
             "cd3d34a469f89b12676edce7d272750201959466",
         ).strip()
-        self.quantization = os.getenv(
-            "MODEL_QUANTIZATION",
-            "Q5_K_M",
-        ).strip()
+        self.quantization = os.getenv("MODEL_QUANTIZATION", "Q5_K_M").strip()
         self.primary_model = os.getenv(
             "HF_MODEL",
             f"{self.model_repo}:{self.quantization}",
@@ -121,17 +97,14 @@ class ModelService:
             "/opt/huggingface/hub",
         ).strip()
         self.enabled = env_bool("LLM_ENABLED", True)
-        self.local_files_only = env_bool(
-            "HF_LOCAL_FILES_ONLY",
-            False,
-        )
+        self.local_files_only = env_bool("HF_LOCAL_FILES_ONLY", False)
         self.max_input_tokens = max(
             512,
             int(os.getenv("MODEL_MAX_INPUT_TOKENS", "2048")),
         )
         self.max_new_tokens = max(
-            96,
-            int(os.getenv("MODEL_MAX_NEW_TOKENS", "192")),
+            48,
+            int(os.getenv("MODEL_MAX_NEW_TOKENS", "64")),
         )
         self.max_generation_seconds = max(
             10.0,
@@ -156,10 +129,7 @@ class ModelService:
                 int(os.getenv("MODEL_BATCH_TOKENS", "512")),
             ),
         )
-        self.threads = max(
-            1,
-            int(os.getenv("MODEL_THREADS", "2")),
-        )
+        self.threads = max(1, int(os.getenv("MODEL_THREADS", "2")))
         self.threads_batch = max(
             1,
             int(os.getenv("MODEL_THREADS_BATCH", str(self.threads))),
@@ -172,20 +142,14 @@ class ModelService:
             1.0,
             max(0.01, float(os.getenv("MODEL_TOP_P", "0.8"))),
         )
-        self.top_k = max(
-            0,
-            int(os.getenv("MODEL_TOP_K", "20")),
-        )
+        self.top_k = max(0, int(os.getenv("MODEL_TOP_K", "20")))
         self.min_p = min(
             1.0,
             max(0.0, float(os.getenv("MODEL_MIN_P", "0"))),
         )
         self.presence_penalty = min(
             2.0,
-            max(
-                0.0,
-                float(os.getenv("MODEL_PRESENCE_PENALTY", "1.5")),
-            ),
+            max(0.0, float(os.getenv("MODEL_PRESENCE_PENALTY", "1.0"))),
         )
         self.repeat_penalty = max(
             0.01,
@@ -245,9 +209,7 @@ class ModelService:
         if self.prompt_cache_mb > 0:
             model.set_cache(
                 LlamaRAMCache(
-                    capacity_bytes=self.prompt_cache_mb
-                    * 1024
-                    * 1024
+                    capacity_bytes=self.prompt_cache_mb * 1024 * 1024
                 )
             )
 
@@ -265,42 +227,29 @@ class ModelService:
                 return self.model
 
             started = time.monotonic()
-
             try:
                 model_path, model = self._load_model()
                 self.model_path = model_path
                 self.model = model
                 self.model_name = self.primary_model
                 self.load_error = None
-                self.load_seconds = round(
-                    time.monotonic() - started,
-                    3,
-                )
+                self.load_seconds = round(time.monotonic() - started, 3)
                 return model
             except Exception as error:
                 self.model = None
                 self.model_path = None
                 self.model_name = None
                 self.load_error = repr(error)
-                self.load_seconds = round(
-                    time.monotonic() - started,
-                    3,
-                )
+                self.load_seconds = round(time.monotonic() - started, 3)
                 gc.collect()
                 raise RuntimeError(self.load_error) from error
 
     def _cooldown_remaining(self):
-        return max(
-            0.0,
-            self.degraded_until - time.monotonic(),
-        )
+        return max(0.0, self.degraded_until - time.monotonic())
 
     def _mark_degraded(self, reason):
         self.degraded_reason = str(reason)
-        self.degraded_until = (
-            time.monotonic()
-            + self.failure_cooldown_seconds
-        )
+        self.degraded_until = time.monotonic() + self.failure_cooldown_seconds
 
     def _clear_degraded(self):
         self.degraded_until = 0.0
@@ -317,19 +266,10 @@ class ModelService:
 
         for message in prepared:
             if message["role"] == "system":
-                message["content"] = (
-                    message["content"].rstrip()
-                    + "\n\n/no_think"
-                )
+                message["content"] = message["content"].rstrip() + "\n\n/no_think"
                 return prepared
 
-        return [
-            {
-                "role": "system",
-                "content": "/no_think",
-            },
-            *prepared,
-        ]
+        return [{"role": "system", "content": "/no_think"}, *prepared]
 
     def _count_message_tokens(self, model, messages):
         serialized = json.dumps(
@@ -337,39 +277,20 @@ class ModelService:
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
-
         try:
-            tokens = model.tokenize(
-                serialized,
-                add_bos=False,
-                special=True,
-            )
+            tokens = model.tokenize(serialized, add_bos=False, special=True)
         except TypeError:
-            tokens = model.tokenize(
-                serialized,
-                add_bos=False,
-            )
-
+            tokens = model.tokenize(serialized, add_bos=False)
         return len(tokens)
 
     def _count_text_tokens(self, model, text):
         if not text:
             return 0
-
         value = str(text).encode("utf-8")
-
         try:
-            tokens = model.tokenize(
-                value,
-                add_bos=False,
-                special=True,
-            )
+            tokens = model.tokenize(value, add_bos=False, special=True)
         except TypeError:
-            tokens = model.tokenize(
-                value,
-                add_bos=False,
-            )
-
+            tokens = model.tokenize(value, add_bos=False)
         return len(tokens)
 
     def _response_format(self):
@@ -404,10 +325,7 @@ class ModelService:
                 "quantization": self.quantization,
                 "bypassed": True,
                 "bypass_reason": "cooldown",
-                "cooldown_remaining_seconds": round(
-                    cooldown_remaining,
-                    3,
-                ),
+                "cooldown_remaining_seconds": round(cooldown_remaining, 3),
             }
             raise RuntimeError(
                 "LLM inference is temporarily bypassed after a recent backend timeout "
@@ -418,10 +336,7 @@ class ModelService:
 
         with self.generation_lock:
             prepared_messages = self._prepare_messages(messages)
-            input_tokens = self._count_message_tokens(
-                model,
-                prepared_messages,
-            )
+            input_tokens = self._count_message_tokens(model, prepared_messages)
 
             if input_tokens > self.max_input_tokens:
                 raise RuntimeError(
@@ -435,21 +350,17 @@ class ModelService:
             stream = None
             first_chunk_seconds = None
             first_content_seconds = None
+            closed_early = False
 
             try:
-                stream = self._create_stream(
-                    model,
-                    prepared_messages,
-                )
+                stream = self._create_stream(model, prepared_messages)
 
                 for chunk in stream:
                     elapsed = time.monotonic() - started
-
                     if first_chunk_seconds is None:
                         first_chunk_seconds = elapsed
 
                     choices = chunk.get("choices") or []
-
                     if choices:
                         choice = choices[0]
                         delta = choice.get("delta") or {}
@@ -459,31 +370,26 @@ class ModelService:
                             if first_content_seconds is None:
                                 first_content_seconds = elapsed
                             parts.append(str(content))
+                            if json_object_complete("".join(parts)):
+                                finish_reason = "json_complete"
+                                closed_early = True
+                                break
 
                         if choice.get("finish_reason"):
-                            finish_reason = str(
-                                choice.get("finish_reason")
-                            )
+                            finish_reason = str(choice.get("finish_reason"))
 
-                    if (
-                        elapsed >= self.max_generation_seconds
-                        and not finish_reason
-                    ):
+                    if elapsed >= self.max_generation_seconds and not finish_reason:
                         timed_out = True
                         break
             finally:
-                if timed_out and stream is not None:
+                if stream is not None and (timed_out or closed_early):
                     close = getattr(stream, "close", None)
-
                     if callable(close):
                         close()
 
             elapsed = time.monotonic() - started
             text = "".join(parts).strip()
-            completion_tokens = self._count_text_tokens(
-                model,
-                text,
-            )
+            completion_tokens = self._count_text_tokens(model, text)
             tokens_per_second = (
                 round(completion_tokens / elapsed, 3)
                 if elapsed > 0 and completion_tokens
@@ -520,8 +426,11 @@ class ModelService:
                 )
 
             if not text:
+                raise RuntimeError("The configured LLM returned an empty response.")
+
+            if finish_reason == "length":
                 raise RuntimeError(
-                    "The configured LLM returned an empty response."
+                    "The configured LLM reached the output token limit before completing the requested response."
                 )
 
             try:
@@ -530,11 +439,6 @@ class ModelService:
                 raise RuntimeError(
                     "The configured GGUF JSON-constrained generation returned invalid JSON."
                 ) from error
-
-            if finish_reason == "length":
-                raise RuntimeError(
-                    "The configured LLM reached the output token limit before completing the requested response."
-                )
 
             self._clear_degraded()
             return text
@@ -570,10 +474,7 @@ class ModelService:
             "max_new_tokens": self.max_new_tokens,
             "max_generation_seconds": self.max_generation_seconds,
             "failure_cooldown_seconds": self.failure_cooldown_seconds,
-            "cooldown_remaining_seconds": round(
-                self._cooldown_remaining(),
-                3,
-            ),
+            "cooldown_remaining_seconds": round(self._cooldown_remaining(), 3),
             "degraded_reason": self.degraded_reason,
             "prompt_cache_mb": self.prompt_cache_mb,
             "temperature": self.temperature,

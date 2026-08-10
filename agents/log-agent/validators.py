@@ -62,6 +62,30 @@ AUTOMATIC_MODIFICATION_CLAIMS = {
     "generated patch",
 }
 
+
+
+ORIGIN_CODES = {
+    "A": "APPLICATION_DEFECT",
+    "E": "ENVIRONMENT",
+    "D": "TEST_DISCOVERY",
+    "X": "EXECUTION",
+    "N": "NOT_ESTABLISHED",
+}
+
+RISK_CODES = {
+    "L": "LOW",
+    "M": "MEDIUM",
+    "H": "HIGH",
+    "C": "CRITICAL",
+    "U": "UNKNOWN",
+}
+
+CONFIDENCE_CODES = {
+    "H": "HIGH",
+    "M": "MEDIUM",
+    "L": "LOW",
+}
+
 STOP_WORDS = {
     "the", "and", "for", "with", "from", "that", "this", "into", "when",
     "was", "were", "are", "has", "have", "had", "test", "tests", "failed",
@@ -319,6 +343,89 @@ def normalize_payload(payload):
     return payload
 
 
+def expand_failure_reference(value, base_analysis):
+    submitted = submitted_failure_ids(base_analysis)
+
+    if isinstance(value, int):
+        if value < 1 or value > len(submitted):
+            raise ValueError("The model response referenced an unknown evidence number.")
+        return submitted[value - 1]
+
+    text = str(value or "").strip()
+    if text.isdigit():
+        number = int(text)
+        if number < 1 or number > len(submitted):
+            raise ValueError("The model response referenced an unknown evidence number.")
+        return submitted[number - 1]
+
+    if text in submitted:
+        return text
+
+    raise ValueError("The model response referenced an unknown or unsubmitted failure ID.")
+
+
+def expand_code(value, mapping, label):
+    text = str(value or "").strip().upper()
+    if text in mapping:
+        return mapping[text]
+    if text in mapping.values():
+        return text
+    raise ValueError(f"The model response used an unsupported {label} code.")
+
+
+def normalize_wire_payload(data, base_analysis):
+    if not isinstance(data, dict):
+        raise ValueError("The model response must be a JSON object.")
+
+    if "x" in data:
+        return data
+
+    groups = data.get("g", [])
+    if not isinstance(groups, list):
+        raise ValueError("The model response groups field must be an array.")
+
+    overall_origin = expand_code(data.get("o"), ORIGIN_CODES, "origin")
+    expanded_groups = []
+    for group in groups:
+        if not isinstance(group, dict):
+            raise ValueError("Each model reasoning group must be a JSON object.")
+        refs = group.get("f")
+        if not isinstance(refs, list) or not refs:
+            raise ValueError("Each model reasoning group must reference evidence numbers.")
+        expanded_groups.append(
+            {
+                "f": [expand_failure_reference(item, base_analysis) for item in refs],
+                "k": group.get("k"),
+                "o": overall_origin,
+                "c": group.get("c"),
+                "i": group.get("i"),
+                "a": group.get("a"),
+            }
+        )
+
+    if expanded_groups:
+        first = expanded_groups[0]
+        summary_parts = [
+            str(value).strip().rstrip(".")
+            for value in (first.get("c"), first.get("i"))
+            if str(value or "").strip()
+        ]
+        summary = ". ".join(summary_parts) + ("." if summary_parts else "")
+        verification = str(first.get("a") or "").strip()
+    else:
+        summary = "Runtime evidence requires QA review."
+        verification = "Rerun the validated runtime workflow."
+
+    return {
+        "s": summary,
+        "o": overall_origin,
+        "r": expand_code(data.get("r"), RISK_CODES, "risk"),
+        "c": expand_code(data.get("q"), CONFIDENCE_CODES, "confidence"),
+        "v": verification,
+        "x": expanded_groups,
+    }
+
+
 def validate_model_output(text, base_analysis):
     raw_json = extract_json_object(text)
     try:
@@ -327,6 +434,7 @@ def validate_model_output(text, base_analysis):
         raise ValueError(f"The model response failed JSON parsing: {error}") from error
 
     try:
+        data = normalize_wire_payload(data, base_analysis)
         payload = ModelAnalysisPayload.model_validate(data)
     except ValidationError as error:
         raise ValueError(f"The model response failed schema validation: {error}") from error

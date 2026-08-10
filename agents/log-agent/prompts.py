@@ -2,25 +2,11 @@ import json
 import os
 
 
-SYSTEM_PROMPT = """You are Stitch QA's Runtime Quality Intelligence Analyst. Act like a senior runtime QA investigator, not a template engine.
+SYSTEM_PROMPT = """You are Stitch QA's Runtime Quality Intelligence Analyst. Facts are immutable; you make the QA reasoning decisions.
 
-The supplied facts are immutable evidence. You may interpret them, connect them, group failures, diagnose causes, assess tested-scope risk, and recommend verification. Never invent or change test counts, commands, exit codes, test names, exception data, expected/actual values, file paths, line numbers, execution status, test result, or evidence quality.
+Group related failures and choose overall origin, risk, confidence, category, root cause, impact, and action. Never invent or alter counts, exceptions, expected/actual values, files, lines, execution status, test result, or release gate. Runtime/test QA only; no patches or whole-product claims.
 
-Reason dynamically from the evidence. Do not copy the fallback diagnosis. Group failures by the most plausible shared cause, even when their exception text differs, but every group must reference only supplied failure IDs. Prefer one shared group when evidence supports a common cause and separate groups when causes materially differ.
-
-Stay inside runtime/test QA. Do not assess architecture, static source quality, security posture, UX, business requirements, or whole-product readiness. Do not generate patches or automatically modify code. Do not put release-gate wording in s; the backend appends the locked runtime gate.
-
-Use /no_think behavior. Return exactly one compact JSON object using only these short keys:
-s = concise developer summary
-o = overall failure origin
-r = runtime risk
-c = diagnosis confidence
-v = next verification action
-x = reasoning groups
-Each group uses f=failure IDs, k=category, o=failure origin, c=root cause, i=runtime impact, a=required action.
-x must be a JSON array of JSON objects. Every x item must be an object with exactly f, k, o, c, i, and a. Never encode a group as an array, tuple, or positional list.
-
-Keep s to at most 22 words. Keep v to at most 18 words. Keep each group c to at most 26 words, i to at most 18 words, and a to at most 18 words. No markdown or extra fields."""
+Return compact JSON only: o=A/E/D/X/N origin, r=L/M/H/C/U risk, q=H/M/L confidence, g=groups. Group keys: f=evidence numbers, k=category, c=cause, i=impact, a=action. Cover every evidence number exactly once. c<=6 words, i<=4 words, a<=6 words and include verification when useful. /no_think"""
 
 
 def compact_text(value, limit):
@@ -30,28 +16,10 @@ def compact_text(value, limit):
     return text[: limit - 3].rstrip() + "..."
 
 
-def compact_failure(item):
-    if not isinstance(item, dict):
-        return {}
-
-    result = {
-        "id": item.get("failure_id") or item.get("id"),
-        "status": item.get("status"),
-        "test": compact_text(item.get("test_name"), 180),
-        "exception": compact_text(item.get("exception_type"), 100),
-        "message": compact_text(item.get("exception_message"), 180),
-        "expected": compact_text(item.get("expected"), 120),
-        "actual": compact_text(item.get("actual"), 120),
-        "app": compact_text(item.get("application_file"), 180),
-        "app_line": item.get("application_line"),
-        "test_file": compact_text(item.get("test_file"), 180),
-        "test_line": item.get("test_line"),
-    }
-    return {
-        key: value
-        for key, value in result.items()
-        if value not in (None, "")
-    }
+def join_location(path, line):
+    if path and line:
+        return f"{path}:{line}"
+    return path or None
 
 
 def flatten_failure_evidence(base_analysis):
@@ -64,48 +32,62 @@ def flatten_failure_evidence(base_analysis):
             if not failure_id or failure_id in seen:
                 continue
             seen.add(failure_id)
-            failures.append(compact_failure(item))
+            failures.append(item)
 
     return failures
+
+
+def compact_failure(item, number):
+    result = {
+        "n": number,
+        "e": compact_text(item.get("exception_type"), 80),
+        "m": compact_text(item.get("exception_message"), 120),
+        "x": compact_text(item.get("expected"), 90),
+        "y": compact_text(item.get("actual"), 90),
+        "a": compact_text(
+            join_location(item.get("application_file"), item.get("application_line")),
+            150,
+        ),
+        "t": compact_text(
+            join_location(item.get("test_file"), item.get("test_line")),
+            150,
+        ),
+    }
+    return {key: value for key, value in result.items() if value not in (None, "")}
 
 
 def build_analysis_messages(base_analysis):
     configured = int(os.getenv("LLM_MAX_FAILURES", "8"))
     max_failures = min(max(configured, 1), 16)
-    failures = flatten_failure_evidence(base_analysis)[:max_failures]
+    source_failures = flatten_failure_evidence(base_analysis)[:max_failures]
+    failures = [
+        compact_failure(item, index)
+        for index, item in enumerate(source_failures, start=1)
+    ]
     run = base_analysis.get("run_summary", {})
 
     payload = {
-        "facts": {
-            "execution": base_analysis.get("execution_status"),
-            "result": base_analysis.get("test_result"),
-            "framework": run.get("framework"),
-            "total": run.get("total", 0),
-            "passed": run.get("passed", 0),
-            "failed": run.get("failed", 0),
-            "errors": run.get("errors", 0),
-            "skipped": run.get("skipped", 0),
-            "exit": run.get("exit_code"),
-            "evidence": base_analysis.get("evidence_quality"),
+        "run": {
+            "fw": run.get("framework"),
+            "n": run.get("total", 0),
+            "p": run.get("passed", 0),
+            "f": run.get("failed", 0),
+            "e": run.get("errors", 0),
+            "s": run.get("skipped", 0),
+            "x": run.get("exit_code"),
+            "q": base_analysis.get("evidence_quality"),
             "gate": base_analysis.get("release_gate"),
         },
-        "failures": failures,
-        "failure_records_total": run.get("failure_records_total", len(failures)),
-        "failure_records_submitted": len(failures),
+        "ev": failures,
     }
-
-    user_instruction = (
-        "Analyze the evidence as a runtime QA investigator. The gate in facts is a locked safety boundary; do not contradict it. "
-        "For FAIL, cover every submitted failure ID exactly once across x. For PASS or cases with no failure IDs, return x as []. "
-        "Allowed o values: APPLICATION_DEFECT, ENVIRONMENT, TEST_DISCOVERY, EXECUTION, NOT_ESTABLISHED. "
-        "Allowed r values: LOW, MEDIUM, HIGH, CRITICAL, UNKNOWN. Allowed c values: HIGH, MEDIUM, LOW. "
-        "Return compact JSON only. x must contain objects, never arrays. Example group shape: "
-        '{"f":["FAIL-0001"],"k":"CATEGORY","o":"APPLICATION_DEFECT","c":"cause","i":"impact","a":"action"}. '
-        "Evidence:\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    )
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_instruction},
+        {
+            "role": "user",
+            "content": (
+                "Analyze ev. Group f values must use ev.n integers only. JSON only.\n"
+                + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            ),
+        },
     ]
