@@ -126,6 +126,7 @@ def test_prompt_uses_compact_locked_evidence_not_fallback_diagnosis():
     assert "ZeroDivisionError" in user_text
     assert "PYTEST-0001" not in user_text
     assert "Boundary-input validation is missing or insufficient" not in user_text
+    assert "Confirmed FAIL: r must be H or C." in user_text
     assert len(user_text) < 1800
 
 
@@ -182,12 +183,22 @@ def test_wrong_locked_test_count_is_rejected():
         validate_model_output(json.dumps(data), base)
 
 
-def test_confirmed_failure_cannot_be_downgraded_to_low_risk():
+def test_confirmed_failure_low_risk_is_clamped_without_discarding_ai_reasoning():
     base = build_base_analysis(build_request())
     data = valid_model_payload()
     data["r"] = "L"
-    with pytest.raises(ValueError, match="cannot be downgraded"):
-        validate_model_output(json.dumps(data), base)
+    data["g"][0]["c"] = "Unchecked zero division across boundary inputs"
+    payload = validate_model_output(json.dumps(data), base)
+    assert payload.runtime_risk_level == "HIGH"
+    assert payload.groups[0].root_cause == "Unchecked zero division across boundary inputs"
+
+
+def test_confirmed_failure_critical_ai_risk_is_preserved():
+    base = build_base_analysis(build_request())
+    data = valid_model_payload()
+    data["r"] = "C"
+    payload = validate_model_output(json.dumps(data), base)
+    assert payload.runtime_risk_level == "CRITICAL"
 
 
 def test_ai_merge_owns_reasoning_but_preserves_locked_release_gate_and_facts():
@@ -482,6 +493,24 @@ def test_analyze_endpoint_uses_ai_reasoning_for_confirmed_failure(monkeypatch):
     assert response.root_cause_groups[0].category == "BOUNDARY"
     assert response.runtime_risk_level == "HIGH"
     assert response.release_gate == "BLOCK_RELEASE"
+
+
+def test_analyze_endpoint_keeps_ai_reasoning_when_risk_is_safely_clamped(monkeypatch):
+    data = valid_model_payload()
+    data["r"] = "M"
+    data["g"][0]["c"] = "Unchecked zero division across boundary inputs"
+
+    monkeypatch.setattr(model_service, "enabled", True)
+    monkeypatch.setattr(model_service, "model_name", "Qwen/Qwen3-1.7B-GGUF:Q5_K_M")
+    monkeypatch.setattr(model_service, "generate", lambda messages: json.dumps(data))
+
+    response = analyze_logs(build_request())
+
+    assert response.mode == "ai-reasoned-validated"
+    assert response.runtime_risk_level == "HIGH"
+    assert response.release_gate == "BLOCK_RELEASE"
+    assert response.root_cause_groups[0].root_cause == "Unchecked zero division across boundary inputs"
+    assert response.llm_error is None
 
 
 def test_analyze_endpoint_preserves_deterministic_fallback_on_ai_failure(monkeypatch):

@@ -81,12 +81,18 @@ def build_analysis_messages(base_analysis):
         "ev": failures,
     }
 
+    risk_instruction = ""
+    if str(base_analysis.get("test_result") or "").upper() == "FAIL":
+        risk_instruction = " Confirmed FAIL: r must be H or C."
+
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
-                "Analyze ev. Group f values must use ev.n integers only. JSON only.\n"
+                "Analyze ev. Group f values must use ev.n integers only."
+                + risk_instruction
+                + " JSON only.\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             ),
         },

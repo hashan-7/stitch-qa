@@ -313,16 +313,31 @@ def validate_group_coverage_and_grounding(payload, base_analysis):
         raise ValueError("The model response did not cover every submitted failure ID exactly once.")
 
 
+def apply_runtime_risk_safety_bounds(payload, base_analysis):
+    test_result = str(base_analysis.get("test_result") or "INCONCLUSIVE").upper()
+
+    if test_result == "FAIL" and payload.runtime_risk_level not in {"HIGH", "CRITICAL"}:
+        payload.runtime_risk_level = "HIGH"
+    elif test_result == "PASS" and payload.runtime_risk_level not in {"LOW", "MEDIUM"}:
+        base_risk = str(base_analysis.get("runtime_risk_level") or "LOW").upper()
+        payload.runtime_risk_level = base_risk if base_risk in {"LOW", "MEDIUM"} else "MEDIUM"
+    elif test_result in {"NOT_RUN", "INCONCLUSIVE"} and payload.runtime_risk_level == "LOW":
+        base_risk = str(base_analysis.get("runtime_risk_level") or "UNKNOWN").upper()
+        payload.runtime_risk_level = base_risk if base_risk != "LOW" else "UNKNOWN"
+
+    return payload
+
+
 def validate_semantic_bounds(payload, base_analysis):
     test_result = str(base_analysis.get("test_result") or "INCONCLUSIVE").upper()
     evidence_quality = str(base_analysis.get("evidence_quality") or "NONE").upper()
 
     if test_result == "FAIL" and payload.runtime_risk_level not in {"HIGH", "CRITICAL"}:
-        raise ValueError("A confirmed failing test result cannot be downgraded below HIGH runtime risk.")
+        raise ValueError("A confirmed failing test result must retain at least HIGH runtime risk.")
     if test_result == "PASS" and payload.runtime_risk_level not in {"LOW", "MEDIUM"}:
-        raise ValueError("A passing tested result cannot be promoted to unsupported high runtime risk.")
+        raise ValueError("A passing tested result cannot retain unsupported high runtime risk.")
     if test_result in {"NOT_RUN", "INCONCLUSIVE"} and payload.runtime_risk_level == "LOW":
-        raise ValueError("Missing or inconclusive runtime evidence cannot be classified as LOW risk.")
+        raise ValueError("Missing or inconclusive runtime evidence cannot retain LOW risk.")
     if test_result == "FAIL" and payload.failure_origin == "TEST_DISCOVERY":
         raise ValueError("Executed failing tests cannot be classified as a test-discovery failure.")
 
@@ -440,6 +455,7 @@ def validate_model_output(text, base_analysis):
         raise ValueError(f"The model response failed schema validation: {error}") from error
 
     payload = normalize_payload(payload)
+    payload = apply_runtime_risk_safety_bounds(payload, base_analysis)
     validate_group_coverage_and_grounding(payload, base_analysis)
     validate_references(payload, base_analysis)
     validate_exception_types(payload, base_analysis)
