@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model_service import ModelService, model_service
+from model_service import MODEL_RESPONSE_SCHEMA, ModelService, model_service
 from app import analyze_logs
 from prompts import build_analysis_messages
 from runtime_analyzer import build_base_analysis, should_use_llm
@@ -220,7 +220,29 @@ def completion_chunk(content=None, finish_reason=None):
     }
 
 
-def test_gguf_model_service_uses_no_think_and_lightweight_json_mode(monkeypatch):
+def test_response_schema_requires_object_reasoning_groups():
+    schema = MODEL_RESPONSE_SCHEMA
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == ["s", "o", "r", "c", "v", "x"]
+    group_schema = schema["properties"]["x"]["items"]
+    assert group_schema["type"] == "object"
+    assert group_schema["additionalProperties"] is False
+    assert group_schema["required"] == ["f", "k", "o", "c", "i", "a"]
+    assert group_schema["properties"]["f"]["type"] == "array"
+    assert group_schema["properties"]["f"]["items"]["type"] == "string"
+
+
+def test_malformed_positional_group_output_is_rejected():
+    base = build_base_analysis(build_request())
+    data = valid_model_payload()
+    data["x"] = [
+        ["PYTEST-0001", "PYTEST-0002", "BOUNDARY_VALIDATION"]
+    ]
+    with pytest.raises(ValueError, match="schema validation"):
+        validate_model_output(json.dumps(data), base)
+
+
+def test_gguf_model_service_uses_no_think_and_json_schema_mode(monkeypatch):
     payload = json.dumps(valid_model_payload())
     model = FakeGGUFModel([
         completion_chunk(payload),
@@ -236,7 +258,10 @@ def test_gguf_model_service_uses_no_think_and_lightweight_json_mode(monkeypatch)
     ])
 
     assert json.loads(result) == valid_model_payload()
-    assert model.last_kwargs["response_format"] == {"type": "json_object"}
+    assert model.last_kwargs["response_format"] == {
+        "type": "json_object",
+        "schema": MODEL_RESPONSE_SCHEMA,
+    }
     assert model.last_kwargs["messages"][0]["content"].endswith("/no_think")
     assert model.last_kwargs["stream"] is True
     assert service.last_generation["backend"] == "llama.cpp"

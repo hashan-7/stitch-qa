@@ -7,15 +7,68 @@ import time
 
 MODEL_RESPONSE_SCHEMA = {
     "type": "object",
-    "required": ["s", "o", "r", "c", "v", "x"],
     "properties": {
         "s": {"type": "string"},
-        "o": {"type": "string"},
-        "r": {"type": "string"},
-        "c": {"type": "string"},
+        "o": {
+            "type": "string",
+            "enum": [
+                "APPLICATION_DEFECT",
+                "ENVIRONMENT",
+                "TEST_DISCOVERY",
+                "EXECUTION",
+                "NOT_ESTABLISHED",
+            ],
+        },
+        "r": {
+            "type": "string",
+            "enum": [
+                "LOW",
+                "MEDIUM",
+                "HIGH",
+                "CRITICAL",
+                "UNKNOWN",
+            ],
+        },
+        "c": {
+            "type": "string",
+            "enum": [
+                "HIGH",
+                "MEDIUM",
+                "LOW",
+            ],
+        },
         "v": {"type": "string"},
-        "x": {"type": "array"},
+        "x": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "f": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "k": {"type": "string"},
+                    "o": {
+                        "type": "string",
+                        "enum": [
+                            "APPLICATION_DEFECT",
+                            "ENVIRONMENT",
+                            "TEST_DISCOVERY",
+                            "EXECUTION",
+                            "NOT_ESTABLISHED",
+                        ],
+                    },
+                    "c": {"type": "string"},
+                    "i": {"type": "string"},
+                    "a": {"type": "string"},
+                },
+                "required": ["f", "k", "o", "c", "i", "a"],
+                "additionalProperties": False,
+            },
+        },
     },
+    "required": ["s", "o", "r", "c", "v", "x"],
+    "additionalProperties": False,
 }
 
 
@@ -322,6 +375,7 @@ class ModelService:
     def _response_format(self):
         return {
             "type": "json_object",
+            "schema": MODEL_RESPONSE_SCHEMA,
         }
 
     def _create_stream(self, model, messages):

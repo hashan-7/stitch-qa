@@ -18,6 +18,7 @@ c = diagnosis confidence
 v = next verification action
 x = reasoning groups
 Each group uses f=failure IDs, k=category, o=failure origin, c=root cause, i=runtime impact, a=required action.
+x must be a JSON array of JSON objects. Every x item must be an object with exactly f, k, o, c, i, and a. Never encode a group as an array, tuple, or positional list.
 
 Keep s to at most 22 words. Keep v to at most 18 words. Keep each group c to at most 26 words, i to at most 18 words, and a to at most 18 words. No markdown or extra fields."""
 
@@ -98,7 +99,9 @@ def build_analysis_messages(base_analysis):
         "For FAIL, cover every submitted failure ID exactly once across x. For PASS or cases with no failure IDs, return x as []. "
         "Allowed o values: APPLICATION_DEFECT, ENVIRONMENT, TEST_DISCOVERY, EXECUTION, NOT_ESTABLISHED. "
         "Allowed r values: LOW, MEDIUM, HIGH, CRITICAL, UNKNOWN. Allowed c values: HIGH, MEDIUM, LOW. "
-        "Return compact JSON only. Evidence:\n"
+        "Return compact JSON only. x must contain objects, never arrays. Example group shape: "
+        '{"f":["FAIL-0001"],"k":"CATEGORY","o":"APPLICATION_DEFECT","c":"cause","i":"impact","a":"action"}. '
+        "Evidence:\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     )
 
