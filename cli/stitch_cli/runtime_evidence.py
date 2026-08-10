@@ -1,6 +1,9 @@
 import re
 
-from stitch_cli.runtime_contract import RUNTIME_EVIDENCE_SCHEMA_VERSION, empty_test_summary
+from stitch_cli.runtime_contract import (
+    RUNTIME_EVIDENCE_SCHEMA_VERSION,
+    empty_test_summary,
+)
 from stitch_cli.test_report_parser import parse_junit_reports
 
 
@@ -26,38 +29,61 @@ MAVEN_TEST_BLOCKERS = {
 def unique_strings(items):
     result = []
     seen = set()
+
     for item in items:
         value = str(item or "").strip()
         key = value.lower()
+
         if not value or key in seen:
             continue
+
         seen.add(key)
         result.append(value)
+
     return result
 
 
 def framework_from_profile(command_profile):
     if command_profile == "PYTHON_PYTEST":
         return "pytest"
-    if command_profile in {"MAVEN_SYSTEM", "MAVEN_WRAPPER"}:
+
+    if command_profile in {
+        "MAVEN_SYSTEM",
+        "MAVEN_WRAPPER",
+    }:
         return "maven-surefire"
+
     return "unknown"
 
 
-def classify_maven_test_blocker(stdout, stderr, fallback=False):
-    logs = f"{stdout or ''}\n{stderr or ''}".lower()
+def classify_maven_test_blocker(
+    stdout,
+    stderr,
+    fallback=False,
+):
+    logs = (
+        f"{stdout or ''}\n"
+        f"{stderr or ''}"
+    ).lower()
 
     if (
         "pluginresolutionexception" in logs
-        or "pluginresolutionexception" in logs.replace(" ", "")
+        or "pluginresolutionexception"
+        in logs.replace(" ", "")
         or (
             "plugin org.apache.maven.plugins:" in logs
             and "could not be resolved" in logs
         )
-        or "could not find artifact org.apache.maven.plugins:" in logs
+        or (
+            "could not find artifact "
+            "org.apache.maven.plugins:"
+        )
+        in logs
     ):
         return {
-            "failure_type": "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+            "failure_type": (
+                "MAVEN_PLUGIN_RESOLUTION_FAILURE"
+            ),
             "help_message": (
                 "Maven could not resolve a required build plugin before unit-test execution. "
                 "Verify the plugin coordinates and version, confirm repository access, and rerun Stitch QA."
@@ -66,11 +92,17 @@ def classify_maven_test_blocker(stdout, stderr, fallback=False):
 
     if (
         "dependencyresolutionexception" in logs
-        or "could not resolve dependencies for project" in logs
+        or (
+            "could not resolve dependencies "
+            "for project"
+        )
+        in logs
         or "failed to collect dependencies at" in logs
     ):
         return {
-            "failure_type": "MAVEN_DEPENDENCY_RESOLUTION_FAILURE",
+            "failure_type": (
+                "MAVEN_DEPENDENCY_RESOLUTION_FAILURE"
+            ),
             "help_message": (
                 "Maven could not resolve required project or test dependencies before a conclusive test result was produced. "
                 "Verify dependency coordinates and repositories, then rerun Stitch QA."
@@ -78,20 +110,35 @@ def classify_maven_test_blocker(stdout, stderr, fallback=False):
         }
 
     if (
-        ("testcompile" in logs or "test compilation" in logs)
-        and ("compilation failure" in logs or "compilation error" in logs or "compilation errors" in logs)
+        (
+            "testcompile" in logs
+            or "test compilation" in logs
+        )
+        and (
+            "compilation failure" in logs
+            or "compilation error" in logs
+            or "compilation errors" in logs
+        )
     ):
         return {
-            "failure_type": "MAVEN_TEST_COMPILATION_FAILURE",
+            "failure_type": (
+                "MAVEN_TEST_COMPILATION_FAILURE"
+            ),
             "help_message": (
                 "Maven test-source compilation failed before the test suite could execute. "
                 "Resolve the reported test compilation errors and rerun Stitch QA."
             ),
         }
 
-    if "compilation failure" in logs or "compilation error" in logs or "compilation errors" in logs:
+    if (
+        "compilation failure" in logs
+        or "compilation error" in logs
+        or "compilation errors" in logs
+    ):
         return {
-            "failure_type": "MAVEN_COMPILATION_FAILURE",
+            "failure_type": (
+                "MAVEN_COMPILATION_FAILURE"
+            ),
             "help_message": (
                 "Maven compilation failed before a conclusive unit-test result was produced. "
                 "Resolve the reported compilation errors and rerun Stitch QA."
@@ -100,7 +147,9 @@ def classify_maven_test_blocker(stdout, stderr, fallback=False):
 
     if fallback:
         return {
-            "failure_type": "MAVEN_TEST_EXECUTION_BLOCKED",
+            "failure_type": (
+                "MAVEN_TEST_EXECUTION_BLOCKED"
+            ),
             "help_message": (
                 "Maven exited before Surefire produced an executed test result. "
                 "Resolve the reported build or test-phase blocker and rerun Stitch QA."
@@ -113,8 +162,14 @@ def classify_maven_test_blocker(stdout, stderr, fallback=False):
     }
 
 
-def extract_console_test_summary(stdout, stderr):
-    logs = f"{stdout or ''}\n{stderr or ''}"
+def extract_console_test_summary(
+    stdout,
+    stderr,
+):
+    logs = (
+        f"{stdout or ''}\n"
+        f"{stderr or ''}"
+    )
     summary = empty_test_summary()
 
     maven_matches = re.findall(
@@ -122,16 +177,31 @@ def extract_console_test_summary(stdout, stderr):
         logs,
         re.IGNORECASE,
     )
+
     if maven_matches:
-        totals = [0, 0, 0, 0]
+        totals = [
+            0,
+            0,
+            0,
+            0,
+        ]
+
         for values in maven_matches:
             for index, value in enumerate(values):
                 totals[index] += int(value)
+
         total, failed, errors, skipped = totals
+
         summary.update(
             {
                 "total": total,
-                "passed": max(total - failed - errors - skipped, 0),
+                "passed": max(
+                    total
+                    - failed
+                    - errors
+                    - skipped,
+                    0,
+                ),
                 "failed": failed,
                 "errors": errors,
                 "skipped": skipped,
@@ -145,40 +215,80 @@ def extract_console_test_summary(stdout, stderr):
             re.IGNORECASE,
         )
     )
+
     if pytest_matches:
         match = pytest_matches[-1]
         body = match.group("body")
+
         outcomes = {
             "passed": r"(\d+)\s+passed",
             "failed": r"(\d+)\s+failed",
             "skipped": r"(\d+)\s+skipped",
             "errors": r"(\d+)\s+errors?",
         }
+
         for key, pattern in outcomes.items():
-            outcome = re.search(pattern, body, re.IGNORECASE)
-            summary[key] = int(outcome.group(1)) if outcome else 0
-        summary["total"] = sum(summary[key] for key in ("passed", "failed", "skipped", "errors"))
-        summary["duration_seconds"] = float(match.group("duration"))
+            outcome = re.search(
+                pattern,
+                body,
+                re.IGNORECASE,
+            )
+            summary[key] = (
+                int(outcome.group(1))
+                if outcome
+                else 0
+            )
+
+        summary["total"] = sum(
+            summary[key]
+            for key in (
+                "passed",
+                "failed",
+                "skipped",
+                "errors",
+            )
+        )
+        summary["duration_seconds"] = float(
+            match.group("duration")
+        )
 
     return summary
 
 
-def extract_console_failures(stdout, stderr):
-    logs = f"{stdout or ''}\n{stderr or ''}"
+def extract_console_failures(
+    stdout,
+    stderr,
+):
+    logs = (
+        f"{stdout or ''}\n"
+        f"{stderr or ''}"
+    )
     failures = []
     seen = set()
 
-    for match in re.finditer(r"(?m)^FAILED\s+([^\s]+)", logs):
+    for match in re.finditer(
+        r"(?m)^FAILED\s+([^\s]+)",
+        logs,
+    ):
         test_name = match.group(1).strip()
+
         if test_name in seen:
             continue
+
         seen.add(test_name)
+
         failures.append(
             {
-                "id": f"LOG-{len(failures) + 1:04d}",
+                "id": (
+                    f"LOG-{len(failures) + 1:04d}"
+                ),
                 "status": "FAILED",
                 "test_name": test_name,
-                "test_file": test_name.split("::", 1)[0] if "::" in test_name else None,
+                "test_file": (
+                    test_name.split("::", 1)[0]
+                    if "::" in test_name
+                    else None
+                ),
                 "test_line": None,
                 "classname": None,
                 "duration_seconds": None,
@@ -196,49 +306,103 @@ def extract_console_failures(stdout, stderr):
     return failures
 
 
-def extract_warnings(stdout, stderr):
-    logs = f"{stdout or ''}\n{stderr or ''}"
+def extract_warnings(
+    stdout,
+    stderr,
+):
+    logs = (
+        f"{stdout or ''}\n"
+        f"{stderr or ''}"
+    )
     lower_logs = logs.lower()
     warnings = []
 
     if "warning" in lower_logs:
-        warnings.append("Warnings were detected in the execution output.")
-    if "mockito" in lower_logs and "dynamic loading of agents" in lower_logs:
+        warnings.append(
+            "Warnings were detected in the execution output."
+        )
+
+    if (
+        "mockito" in lower_logs
+        and "dynamic loading of agents" in lower_logs
+    ):
         warnings.append(
             "Mockito dynamic Java agent loading was detected and may require future JDK configuration changes."
         )
+
     if "deprecated" in lower_logs:
-        warnings.append("Deprecated runtime or build behavior was detected in the execution output.")
+        warnings.append(
+            "Deprecated runtime or build behavior was detected in the execution output."
+        )
 
     return unique_strings(warnings)
 
 
-def determine_execution_status(executed, skipped, failure_type, exit_code):
+def determine_execution_status(
+    executed,
+    skipped,
+    failure_type,
+    exit_code,
+):
     if skipped:
         return "SKIPPED"
+
     if failure_type == "COMMAND_TIMEOUT":
         return "TIMED_OUT"
-    if failure_type in ENVIRONMENT_FAILURES or exit_code is None:
+
+    if (
+        failure_type in ENVIRONMENT_FAILURES
+        or exit_code is None
+    ):
         return "FAILED_TO_START"
+
     if executed:
         return "COMPLETED"
+
     return "UNKNOWN"
 
 
-def determine_test_result(summary, success, failure_type, execution_status):
-    if execution_status in {"FAILED_TO_START", "SKIPPED"}:
+def determine_test_result(
+    summary,
+    success,
+    failure_type,
+    execution_status,
+):
+    if execution_status in {
+        "FAILED_TO_START",
+        "SKIPPED",
+    }:
         return "NOT_RUN"
+
     if failure_type == "PYTHON_TESTS_NOT_FOUND":
         return "NOT_RUN"
-    if failure_type in MAVEN_TEST_BLOCKERS and not summary["total"]:
+
+    if (
+        failure_type in MAVEN_TEST_BLOCKERS
+        and not summary["total"]
+    ):
         return "NOT_RUN"
-    if summary["failed"] or summary["errors"]:
+
+    if (
+        summary["failed"]
+        or summary["errors"]
+    ):
         return "FAIL"
-    if summary["total"] and success:
+
+    if (
+        summary["total"]
+        and success
+    ):
         return "PASS"
+
     if success:
         return "INCONCLUSIVE"
-    return "FAIL" if execution_status == "COMPLETED" else "INCONCLUSIVE"
+
+    return (
+        "FAIL"
+        if execution_status == "COMPLETED"
+        else "INCONCLUSIVE"
+    )
 
 
 def build_minimal_runtime_evidence(
@@ -252,16 +416,36 @@ def build_minimal_runtime_evidence(
     help_message,
     duration_seconds=None,
 ):
-    execution_status = determine_execution_status(executed, skipped, failure_type, exit_code)
+    execution_status = determine_execution_status(
+        executed,
+        skipped,
+        failure_type,
+        exit_code,
+    )
+
     return {
-        "schema_version": RUNTIME_EVIDENCE_SCHEMA_VERSION,
-        "framework": framework_from_profile(command_profile),
+        "schema_version": (
+            RUNTIME_EVIDENCE_SCHEMA_VERSION
+        ),
+        "framework": framework_from_profile(
+            command_profile
+        ),
         "command": command,
         "execution_status": execution_status,
-        "test_result": "NOT_RUN" if execution_status in {"FAILED_TO_START", "SKIPPED"} else "INCONCLUSIVE",
+        "test_result": (
+            "NOT_RUN"
+            if execution_status
+            in {
+                "FAILED_TO_START",
+                "SKIPPED",
+            }
+            else "INCONCLUSIVE"
+        ),
         "exit_code": exit_code,
         "duration_seconds": duration_seconds,
-        "test_summary": empty_test_summary(duration_seconds),
+        "test_summary": empty_test_summary(
+            duration_seconds
+        ),
         "failures": [],
         "failure_records_total": 0,
         "failure_records_submitted": 0,
@@ -291,7 +475,9 @@ def collect_runtime_evidence(
     executed=True,
     skipped=False,
 ):
-    framework = framework_from_profile(command_profile)
+    framework = framework_from_profile(
+        command_profile
+    )
 
     if report_files:
         evidence = parse_junit_reports(
@@ -304,51 +490,116 @@ def collect_runtime_evidence(
             failure_type=failure_type,
             help_message=help_message,
         )
-        evidence["warnings"] = extract_warnings(stdout, stderr)
+
+        evidence["warnings"] = extract_warnings(
+            stdout,
+            stderr,
+        )
+
         if evidence["test_result"] == "INCONCLUSIVE":
-            console_summary = extract_console_test_summary(stdout, stderr)
+            console_summary = extract_console_test_summary(
+                stdout,
+                stderr,
+            )
+
             if console_summary["total"]:
-                evidence["test_summary"] = console_summary
-                evidence["test_result"] = determine_test_result(
-                    console_summary,
-                    success,
-                    failure_type,
-                    evidence["execution_status"],
+                evidence["test_summary"] = (
+                    console_summary
                 )
+                evidence["test_result"] = (
+                    determine_test_result(
+                        console_summary,
+                        success,
+                        failure_type,
+                        evidence[
+                            "execution_status"
+                        ],
+                    )
+                )
+
         return evidence
 
-    summary = extract_console_test_summary(stdout, stderr)
+    summary = extract_console_test_summary(
+        stdout,
+        stderr,
+    )
 
     if (
-        command_profile in {"MAVEN_SYSTEM", "MAVEN_WRAPPER"}
+        command_profile
+        in {
+            "MAVEN_SYSTEM",
+            "MAVEN_WRAPPER",
+        }
         and not success
         and not summary["total"]
-        and failure_type not in ENVIRONMENT_FAILURES
+        and failure_type
+        not in ENVIRONMENT_FAILURES
         and failure_type != "COMMAND_TIMEOUT"
     ):
-        blocker = classify_maven_test_blocker(stdout, stderr, fallback=True)
-        failure_type = blocker["failure_type"]
-        help_message = blocker["help_message"]
+        blocker = classify_maven_test_blocker(
+            stdout,
+            stderr,
+            fallback=True,
+        )
+        failure_type = blocker[
+            "failure_type"
+        ]
+        help_message = blocker[
+            "help_message"
+        ]
 
-    execution_status = determine_execution_status(executed, skipped, failure_type, exit_code)
-    failures = extract_console_failures(stdout, stderr)
+    execution_status = determine_execution_status(
+        executed,
+        skipped,
+        failure_type,
+        exit_code,
+    )
+    failures = extract_console_failures(
+        stdout,
+        stderr,
+    )
+
     return {
-        "schema_version": RUNTIME_EVIDENCE_SCHEMA_VERSION,
+        "schema_version": (
+            RUNTIME_EVIDENCE_SCHEMA_VERSION
+        ),
         "framework": framework,
         "command": command,
         "execution_status": execution_status,
-        "test_result": determine_test_result(summary, success, failure_type, execution_status),
+        "test_result": determine_test_result(
+            summary,
+            success,
+            failure_type,
+            execution_status,
+        ),
         "exit_code": exit_code,
         "duration_seconds": duration_seconds,
         "test_summary": summary,
         "failures": failures,
-        "failure_records_total": len(failures),
-        "failure_records_submitted": len(failures),
+        "failure_records_total": len(
+            failures
+        ),
+        "failure_records_submitted": len(
+            failures
+        ),
         "evidence_truncated": False,
-        "warnings": extract_warnings(stdout, stderr),
+        "warnings": extract_warnings(
+            stdout,
+            stderr,
+        ),
         "report_files": [],
-        "report_source": "CONSOLE_FALLBACK" if summary["total"] or failures else "NONE",
-        "evidence_quality": "LOG_ONLY" if summary["total"] or failures else "NONE",
+        "report_source": (
+            "CONSOLE_FALLBACK"
+            if summary["total"]
+            or failures
+            else "NONE"
+        ),
+        "evidence_quality": (
+            "LOG_ONLY"
+            if summary["total"]
+            or failures
+            else "NONE"
+        ),
         "collection_errors": [],
         "failure_type": failure_type,
         "help_message": help_message,
