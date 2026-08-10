@@ -10,6 +10,19 @@ from schemas import ModelAnalysisPayload
 FILE_LINE_PATTERN = re.compile(
     r"(?P<path>[A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+):(?P<line>\d+)"
 )
+EXCEPTION_TOKEN_PATTERN = re.compile(
+    r"\b[A-Z][A-Za-z0-9_]*(?:Error|Exception|Failure)\b"
+)
+COUNT_PATTERNS = {
+    "passed": re.compile(r"\b(\d+)\s+passed\b", re.IGNORECASE),
+    "failed": re.compile(r"\b(\d+)\s+failed\b", re.IGNORECASE),
+    "skipped": re.compile(r"\b(\d+)\s+skipped\b", re.IGNORECASE),
+    "errors": re.compile(r"\b(\d+)\s+errors?\b", re.IGNORECASE),
+}
+EXIT_CODE_PATTERN = re.compile(
+    r"\bexit\s+code\s*[:=]?\s*(-?\d+)\b",
+    re.IGNORECASE,
+)
 
 GLOBAL_RELEASE_CLAIMS = {
     "application is ready for deployment",
@@ -578,6 +591,189 @@ def validate_group_insights(
         )
 
 
+def collect_allowed_exception_types(base_analysis):
+    allowed = set()
+
+    for group in base_analysis.get(
+        "root_cause_groups",
+        [],
+    ):
+        for item in group.get(
+            "evidence",
+            [],
+        ):
+            for key in (
+                "exception_type",
+                "expected",
+                "actual",
+            ):
+                value = str(
+                    item.get(key)
+                    or ""
+                ).strip()
+
+                for match in EXCEPTION_TOKEN_PATTERN.finditer(
+                    value
+                ):
+                    allowed.add(
+                        match.group(0)
+                    )
+
+    return allowed
+
+
+def validate_exception_types(
+    payload,
+    base_analysis,
+):
+    allowed = collect_allowed_exception_types(
+        base_analysis
+    )
+
+    if not allowed:
+        return
+
+    for text in assessment_texts(
+        payload
+    ):
+        for match in EXCEPTION_TOKEN_PATTERN.finditer(
+            text or ""
+        ):
+            if match.group(0) not in allowed:
+                raise ValueError(
+                    "The model response introduced an unsupported exception type."
+                )
+
+
+def validate_locked_numeric_facts(
+    payload,
+    base_analysis,
+):
+    run_summary = base_analysis.get(
+        "run_summary",
+        {},
+    )
+    combined_text = " ".join(
+        assessment_texts(
+            payload
+        )
+    )
+
+    for key, pattern in COUNT_PATTERNS.items():
+        expected = run_summary.get(
+            key
+        )
+
+        if expected is None:
+            continue
+
+        for match in pattern.finditer(
+            combined_text
+        ):
+            if int(match.group(1)) != int(expected):
+                raise ValueError(
+                    "The model response contradicted a parser-validated test count."
+                )
+
+    expected_exit_code = run_summary.get(
+        "exit_code"
+    )
+
+    if expected_exit_code is None:
+        return
+
+    for match in EXIT_CODE_PATTERN.finditer(
+        combined_text
+    ):
+        if int(match.group(1)) != int(expected_exit_code):
+            raise ValueError(
+                "The model response contradicted the parser-validated exit code."
+            )
+
+
+def normalize_anchor(value):
+    return " ".join(
+        str(value or "")
+        .replace("_", " ")
+        .split()
+    ).strip().lower()
+
+
+def group_grounding_anchors(group):
+    anchors = set()
+    category = normalize_anchor(
+        group.get("category")
+    )
+
+    if category:
+        anchors.add(category)
+
+    for item in group.get(
+        "evidence",
+        [],
+    ):
+        for key in (
+            "exception_type",
+            "exception_message",
+            "expected",
+            "actual",
+        ):
+            value = normalize_anchor(
+                item.get(key)
+            )
+
+            if len(value) >= 4:
+                anchors.add(value)
+
+    return anchors
+
+
+def validate_group_grounding(
+    payload,
+    base_analysis,
+):
+    groups = {
+        group.get("group_id"): group
+        for group in base_analysis.get(
+            "root_cause_groups",
+            [],
+        )
+        if group.get("group_id")
+    }
+
+    for insight in payload.group_insights:
+        group = groups.get(
+            insight.group_id
+        )
+
+        if group is None:
+            continue
+
+        model_root_cause = normalize_anchor(
+            insight.root_cause
+        )
+        deterministic_root_cause = normalize_anchor(
+            group.get("root_cause")
+        )
+        anchors = group_grounding_anchors(
+            group
+        )
+        anchored = any(
+            anchor in model_root_cause
+            for anchor in anchors
+        )
+        similarity = SequenceMatcher(
+            None,
+            deterministic_root_cause,
+            model_root_cause,
+        ).ratio()
+
+        if not anchored and similarity < 0.18:
+            raise ValueError(
+                "The model root-cause interpretation was not sufficiently grounded in the submitted evidence."
+            )
+
+
 def validate_references(
     payload,
     base_analysis,
@@ -661,6 +857,18 @@ def validate_model_output(
         base_analysis,
     )
     validate_references(
+        payload,
+        base_analysis,
+    )
+    validate_exception_types(
+        payload,
+        base_analysis,
+    )
+    validate_locked_numeric_facts(
+        payload,
+        base_analysis,
+    )
+    validate_group_grounding(
         payload,
         base_analysis,
     )

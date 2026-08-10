@@ -28,8 +28,8 @@ app = FastAPI(
 
 
 def get_llm_policy():
-    value = os.getenv("LLM_POLICY", "ALWAYS").strip().upper()
-    return value if value in LLM_POLICIES else "ALWAYS"
+    value = os.getenv("LLM_POLICY", "FAILURES_ONLY").strip().upper()
+    return value if value in LLM_POLICIES else "FAILURES_ONLY"
 
 
 def should_attempt_llm(result, policy):
@@ -64,10 +64,12 @@ def readiness_check():
     status = model_service.status()
     return {
         "ready": True,
+        "analysis_ready": True,
         "agent_id": AGENT_ID,
         "llm_policy": get_llm_policy(),
         "llm_enabled": status["enabled"],
         "llm_loaded": status["loaded"],
+        "llm_state": status["state"],
         "configured_model": status["configured_model"],
         "active_model": status["active_model"],
         "deterministic_fallback": True,
@@ -90,11 +92,11 @@ def analyze_logs(request: LogAnalysisRequest):
         model_payload = validate_model_output(model_text, result)
         result = merge_model_output(result, model_payload)
         result["mode"] = "hybrid-validated"
-        result["model"] = model_service.model_name
+        result["model"] = model_service.model_name or model_service.primary_model
         result["llm_error"] = None
     except Exception as error:
         result["mode"] = "rule-based-fallback"
-        result["model"] = model_service.model_name
+        result["model"] = model_service.model_name or model_service.primary_model
         result["llm_error"] = repr(error)
 
     return LogAnalysisResponse.model_validate(result)

@@ -2675,7 +2675,7 @@ def build_agent_details_markdown(
         f"- Agent ID: {safe_value(log_agent_json.get('agent_id'), 'runtime-quality-analyst')}\n"
         f"- Version: {safe_value(log_agent_json.get('agent_version'), '2.0')}\n"
         f"- Mode: {safe_value(log_agent_json.get('mode'), 'Not available')}\n"
-        f"- Model: {safe_value(log_agent_json.get('model'), 'Deterministic fallback')}\n\n"
+        f"- Model: {safe_value(log_agent_json.get('model'), 'Not used')}\n\n"
         "### Runtime Assessment\n\n"
         f"{run_table}\n\n"
         "### Summary\n\n"

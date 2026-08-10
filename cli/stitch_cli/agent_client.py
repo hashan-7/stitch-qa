@@ -1,14 +1,20 @@
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from stitch_cli.code_cli import (
     call_code_agent,
     call_source_review_agent,
 )
+from stitch_cli.runtime_fallback import build_client_runtime_fallback
 
 
 DEFAULT_AGENT_TIMEOUT_SECONDS = 120
+RUNTIME_AGENT_CONNECT_TIMEOUT_SECONDS = 15
+RUNTIME_AGENT_READ_TIMEOUT_SECONDS = 120
+RUNTIME_AGENT_RETRY_TOTAL = 1
 MAX_CODE_SNIPPET_CHARS = 8000
 MAX_ERROR_LOG_CHARS = 12000
 MAX_RUNTIME_AGENT_LOG_CHARS = 24000
@@ -952,12 +958,19 @@ def normalize_log_agent_data(data):
 
 def build_unavailable_log_analysis(
     error,
+    scan_result=None,
+    execution_result=None,
 ):
+    if isinstance(scan_result, dict) and isinstance(execution_result, dict):
+        return build_client_runtime_fallback(
+            scan_result,
+            execution_result,
+            str(error),
+        )
+
     return {
         "agent_id": "runtime-quality-analyst",
-        "display_name": (
-            "Runtime Quality Intelligence Analyst"
-        ),
+        "display_name": "Runtime Quality Intelligence Analyst",
         "agent_version": "2.0",
         "agent": "log-agent",
         "mode": "unavailable",
@@ -969,31 +982,23 @@ def build_unavailable_log_analysis(
         "failure_origin": "NOT_ESTABLISHED",
         "diagnosis_confidence": "LOW",
         "final_status": "UNAVAILABLE",
-        "summary": (
-            "Runtime Quality Intelligence analysis could not be completed because the Runtime Quality Intelligence Analyst was unavailable."
-        ),
+        "summary": "Runtime Quality Intelligence analysis could not be completed because no validated local runtime evidence was available for fallback analysis.",
         "run_summary": {},
         "root_cause_groups": [],
         "primary_root_cause": None,
         "root_cause": None,
-        "runtime_impact": (
-            "Runtime QA evidence is incomplete until the Runtime Quality Intelligence Analyst becomes available or a validated fallback result is supplied."
-        ),
+        "runtime_impact": "Runtime QA evidence is incomplete because neither the remote analyst nor a validated local fallback result was available.",
         "required_actions": [
-            "Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis."
+            "Restore the Runtime Quality Intelligence Analyst service or rerun Stitch QA with valid runtime evidence."
         ],
-        "recommendation": (
-            "Check the Runtime Quality Intelligence Analyst deployment and rerun the requested analysis."
-        ),
+        "recommendation": "Restore the Runtime Quality Intelligence Analyst service or rerun Stitch QA with valid runtime evidence.",
         "verification_steps": [
-            "Confirm the Runtime Quality Intelligence Analyst health endpoint is available, then rerun Stitch QA."
+            "Confirm the Runtime Quality Intelligence Analyst service is reachable and rerun the validated test workflow."
         ],
         "issues": [],
-        "warnings": [
-            str(error)
-        ],
+        "warnings": [str(error)],
         "limitations": [
-            "No Runtime Quality Intelligence Analyst response was available for this run."
+            "No Runtime Quality Intelligence Analyst response or validated local runtime evidence was available for this run."
         ],
         "evidence_quality": "NONE",
         "llm_error": None,
@@ -1168,6 +1173,41 @@ def build_unavailable_code_guidance(
     }
 
 
+def build_runtime_agent_session():
+    retry = Retry(
+        total=RUNTIME_AGENT_RETRY_TOTAL,
+        connect=RUNTIME_AGENT_RETRY_TOTAL,
+        read=RUNTIME_AGENT_RETRY_TOTAL,
+        status=RUNTIME_AGENT_RETRY_TOTAL,
+        backoff_factor=0.75,
+        status_forcelist=(
+            408,
+            425,
+            429,
+            500,
+            502,
+            503,
+            504,
+        ),
+        allowed_methods=frozenset({"POST"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(
+        max_retries=retry
+    )
+    session = requests.Session()
+    session.mount(
+        "https://",
+        adapter,
+    )
+    session.mount(
+        "http://",
+        adapter,
+    )
+    return session
+
+
 def analyze_logs_with_agent(
     agent_url,
     scan_result,
@@ -1211,49 +1251,62 @@ def analyze_logs_with_agent(
         "help_message": failure_context[
             "help_message"
         ],
-        "runtime_evidence": (
-            build_runtime_evidence_payload(
-                execution_result
-            )
+        "runtime_evidence": build_runtime_evidence_payload(
+            execution_result
         ),
     }
 
     try:
-        response = requests.post(
-            f"{agent_url.rstrip('/')}/analyze",
-            json=payload,
-            timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        data = normalize_log_agent_data(
-            response.json()
-        )
+        with build_runtime_agent_session() as session:
+            response = session.post(
+                f"{agent_url.rstrip('/')}/analyze",
+                json=payload,
+                timeout=(
+                    RUNTIME_AGENT_CONNECT_TIMEOUT_SECONDS,
+                    RUNTIME_AGENT_READ_TIMEOUT_SECONDS,
+                ),
+            )
+            response.raise_for_status()
+            data = normalize_log_agent_data(
+                response.json()
+            )
 
         if data is None:
+            error = "Runtime Quality Intelligence Analyst returned an invalid response."
             return {
-                "success": False,
-                "data": None,
-                "error": (
-                    "Runtime Quality Intelligence Analyst returned an invalid response."
+                "success": True,
+                "data": build_client_runtime_fallback(
+                    scan_result,
+                    execution_result,
+                    error,
                 ),
+                "error": error,
+                "degraded": True,
             }
 
         return {
             "success": True,
             "data": data,
             "error": None,
+            "degraded": False,
         }
 
     except (
         requests.exceptions.RequestException,
         ValueError,
     ) as error:
+        error_text = str(
+            error
+        )
         return {
-            "success": False,
-            "data": None,
-            "error": str(
-                error
+            "success": True,
+            "data": build_client_runtime_fallback(
+                scan_result,
+                execution_result,
+                error_text,
             ),
+            "error": error_text,
+            "degraded": True,
         }
 
 

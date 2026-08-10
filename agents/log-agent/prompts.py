@@ -19,6 +19,92 @@ If no submitted root-cause groups are provided, group_insights must be exactly a
 Do not generate patches, code, automatic modifications, or hidden reasoning. Do not include markdown, code fences, headings, commentary, or fields outside the required JSON contract. Keep every field concise, technically precise, auditable, and suitable for a professional pre-deployment QA report."""
 
 
+def compact_text(value, limit):
+    text = " ".join(str(value or "").split()).strip()
+
+    if len(text) <= limit:
+        return text
+
+    return text[: limit - 3].rstrip() + "..."
+
+
+def compact_list(values, item_limit=240, max_items=12):
+    return [
+        compact_text(item, item_limit)
+        for item in list(values or [])[:max_items]
+        if str(item or "").strip()
+    ]
+
+
+def compact_evidence_item(item):
+    if not isinstance(item, dict):
+        return {}
+
+    limits = {
+        "failure_id": 80,
+        "status": 40,
+        "test_name": 220,
+        "test_file": 320,
+        "exception_type": 160,
+        "exception_message": 360,
+        "expected": 240,
+        "actual": 240,
+        "application_file": 320,
+        "failure_type": 160,
+        "help_message": 360,
+        "command": 320,
+    }
+    result = {}
+
+    for key in (
+        "failure_id",
+        "status",
+        "test_name",
+        "test_file",
+        "test_line",
+        "exception_type",
+        "exception_message",
+        "expected",
+        "actual",
+        "application_file",
+        "application_line",
+        "failure_type",
+        "help_message",
+        "command",
+        "exit_code",
+    ):
+        value = item.get(key)
+
+        if value is None or value == "":
+            continue
+
+        if key in limits:
+            result[key] = compact_text(value, limits[key])
+        else:
+            result[key] = value
+
+    return result
+
+
+def compact_run_summary(run_summary):
+    source = run_summary if isinstance(run_summary, dict) else {}
+    return {
+        "framework": compact_text(source.get("framework"), 120),
+        "command": compact_text(source.get("command"), 400),
+        "total": source.get("total", 0),
+        "passed": source.get("passed", 0),
+        "failed": source.get("failed", 0),
+        "skipped": source.get("skipped", 0),
+        "errors": source.get("errors", 0),
+        "exit_code": source.get("exit_code"),
+        "duration_seconds": source.get("duration_seconds"),
+        "report_source": compact_text(source.get("report_source"), 120),
+        "failure_records_total": source.get("failure_records_total", 0),
+        "failure_records_submitted": source.get("failure_records_submitted", 0),
+        "evidence_truncated": bool(source.get("evidence_truncated")),
+    }
+
+
 def build_case_instruction(test_result, has_groups):
     if test_result == "PASS":
         return (
@@ -84,18 +170,10 @@ def build_case_instruction(test_result, has_groups):
 
 def build_required_output_contract(test_result, has_groups):
     contract = {
-        "outcome_interpretation": (
-            "One concise sentence explaining what the validated runtime outcome means"
-        ),
-        "scope_assurance": (
-            "One concise sentence defining assurance only for the tested runtime scope"
-        ),
-        "residual_runtime_risk": (
-            "One concise sentence describing runtime risk not eliminated by the supplied evidence"
-        ),
-        "next_verification": (
-            "One concise sentence giving the next manual verification or evidence-retention action"
-        ),
+        "outcome_interpretation": "One concise sentence explaining what the validated runtime outcome means",
+        "scope_assurance": "One concise sentence defining assurance only for the tested runtime scope",
+        "residual_runtime_risk": "One concise sentence describing runtime risk not eliminated by the supplied evidence",
+        "next_verification": "One concise sentence giving the next manual verification or evidence-retention action",
     }
 
     if test_result == "PASS" or not has_groups:
@@ -110,7 +188,6 @@ def build_required_output_contract(test_result, has_groups):
             "required_action": "One concise manual remediation and verification sentence",
         }
     ]
-
     return contract
 
 
@@ -129,122 +206,75 @@ def build_group_instruction(test_result, has_groups):
 
 
 def build_analysis_messages(base_analysis):
-    configured_groups = int(
-        os.getenv(
-            "LLM_MAX_GROUPS",
-            "4",
-        )
-    )
-    max_groups = min(
-        max(
-            configured_groups,
-            1,
-        ),
-        2,
-    )
-    test_result = str(
-        base_analysis.get(
-            "test_result"
-        )
-        or "INCONCLUSIVE"
-    ).upper()
-    release_gate = str(
-        base_analysis.get(
-            "release_gate"
-        )
-        or "REVIEW_REQUIRED"
-    ).upper()
-    source_groups = base_analysis.get(
-        "root_cause_groups",
-        [],
-    )
+    configured_groups = int(os.getenv("LLM_MAX_GROUPS", "2"))
+    max_groups = min(max(configured_groups, 1), 4)
+    test_result = str(base_analysis.get("test_result") or "INCONCLUSIVE").upper()
+    release_gate = str(base_analysis.get("release_gate") or "REVIEW_REQUIRED").upper()
+    source_groups = base_analysis.get("root_cause_groups", [])
 
     if test_result == "PASS":
         groups = []
     else:
-        groups = [
-            {
-                "group_id": group.get(
-                    "group_id"
-                ),
-                "category": group.get(
-                    "category"
-                ),
-                "failure_origin": group.get(
-                    "failure_origin"
-                ),
-                "affected_tests": group.get(
-                    "affected_tests",
-                    [],
-                ),
-                "evidence": group.get(
-                    "evidence",
-                    [],
-                )[:8],
-                "validated_root_cause": group.get(
-                    "root_cause"
-                ),
-                "validated_runtime_impact": group.get(
-                    "runtime_impact"
-                ),
-                "validated_required_action": group.get(
-                    "required_action"
-                ),
-            }
-            for group in source_groups[:max_groups]
-        ]
+        groups = []
+
+        for group in source_groups[:max_groups]:
+            evidence = [
+                compact_evidence_item(item)
+                for item in list(group.get("evidence", []))[:6]
+            ]
+            groups.append(
+                {
+                    "group_id": group.get("group_id"),
+                    "category": group.get("category"),
+                    "failure_origin": group.get("failure_origin"),
+                    "affected_tests": compact_list(
+                        group.get("affected_tests", []),
+                        item_limit=220,
+                        max_items=20,
+                    ),
+                    "evidence": evidence,
+                    "validated_root_cause": compact_text(
+                        group.get("root_cause"),
+                        900,
+                    ),
+                    "validated_runtime_impact": compact_text(
+                        group.get("runtime_impact"),
+                        700,
+                    ),
+                    "validated_required_action": compact_text(
+                        group.get("required_action"),
+                        700,
+                    ),
+                }
+            )
 
     has_groups = bool(groups)
-
     payload = {
-        "case_instruction": build_case_instruction(
-            test_result,
-            has_groups,
-        ),
+        "case_instruction": build_case_instruction(test_result, has_groups),
         "locked_facts": {
-            "execution_status": base_analysis.get(
-                "execution_status"
-            ),
+            "execution_status": base_analysis.get("execution_status"),
             "test_result": test_result,
             "release_gate": release_gate,
-            "runtime_risk_level": base_analysis.get(
-                "runtime_risk_level"
+            "runtime_risk_level": base_analysis.get("runtime_risk_level"),
+            "failure_origin": base_analysis.get("failure_origin"),
+            "diagnosis_confidence": base_analysis.get("diagnosis_confidence"),
+            "evidence_quality": base_analysis.get("evidence_quality"),
+            "run_summary": compact_run_summary(base_analysis.get("run_summary", {})),
+            "warnings": compact_list(
+                base_analysis.get("warnings", []),
+                item_limit=280,
+                max_items=8,
             ),
-            "failure_origin": base_analysis.get(
-                "failure_origin"
-            ),
-            "diagnosis_confidence": base_analysis.get(
-                "diagnosis_confidence"
-            ),
-            "evidence_quality": base_analysis.get(
-                "evidence_quality"
-            ),
-            "run_summary": base_analysis.get(
-                "run_summary",
-                {},
-            ),
-            "warnings": base_analysis.get(
-                "warnings",
-                [],
-            ),
-            "limitations": base_analysis.get(
-                "limitations",
-                [],
+            "limitations": compact_list(
+                base_analysis.get("limitations", []),
+                item_limit=320,
+                max_items=6,
             ),
         },
         "submitted_root_cause_groups": groups,
-        "root_cause_groups_total": (
-            0
-            if test_result == "PASS"
-            else len(source_groups)
-        ),
-        "root_cause_groups_submitted": len(
-            groups
-        ),
-        "required_output": build_required_output_contract(
-            test_result,
-            has_groups,
-        ),
+        "root_cause_groups_total": 0 if test_result == "PASS" else len(source_groups),
+        "root_cause_groups_submitted": len(groups),
+        "required_output": build_required_output_contract(test_result, has_groups),
     }
 
     return [
@@ -264,10 +294,7 @@ def build_analysis_messages(base_analysis):
                 + json.dumps(
                     payload,
                     ensure_ascii=False,
-                    separators=(
-                        ",",
-                        ":",
-                    ),
+                    separators=(",", ":"),
                 )
             ),
         },

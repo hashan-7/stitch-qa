@@ -1,8 +1,6 @@
 import re
 from collections import defaultdict
 
-from schemas import LogAnalysisRequest, RuntimeEvidence
-
 
 AGENT_ID = "runtime-quality-analyst"
 DISPLAY_NAME = "Runtime Quality Intelligence Analyst"
@@ -49,6 +47,13 @@ def unique_strings(items):
     return result
 
 
+def safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def short_text(value, limit=240):
     text = " ".join(str(value or "").split()).strip()
 
@@ -58,226 +63,39 @@ def short_text(value, limit=240):
     return text[: limit - 3].rstrip() + "..."
 
 
-def extract_console_summary(logs):
-    summary = {
-        "total": 0,
-        "passed": 0,
-        "failed": 0,
-        "skipped": 0,
-        "errors": 0,
-        "duration_seconds": None,
-    }
-
-    maven_match = re.search(
-        r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)",
-        logs,
-        re.IGNORECASE,
-    )
-
-    if maven_match:
-        total, failed, errors, skipped = [
-            int(value)
-            for value in maven_match.groups()
-        ]
-        summary.update(
-            {
-                "total": total,
-                "passed": max(
-                    total - failed - errors - skipped,
-                    0,
-                ),
-                "failed": failed,
-                "errors": errors,
-                "skipped": skipped,
-            }
-        )
-
-    pytest_match = re.search(
-        r"=+\s*(?P<body>[^=\n]+?)\s+in\s+(?P<duration>\d+(?:\.\d+)?)s\s*=+",
-        logs,
-        re.IGNORECASE,
-    )
-
-    if pytest_match:
-        body = pytest_match.group("body")
-        outcomes = {
-            "passed": r"(\d+)\s+passed",
-            "failed": r"(\d+)\s+failed",
-            "skipped": r"(\d+)\s+skipped",
-            "errors": r"(\d+)\s+errors?",
-        }
-
-        for key, pattern in outcomes.items():
-            match = re.search(
-                pattern,
-                body,
-                re.IGNORECASE,
-            )
-            summary[key] = (
-                int(match.group(1))
-                if match
-                else 0
-            )
-
-        summary["total"] = sum(
-            summary[key]
-            for key in (
-                "passed",
-                "failed",
-                "skipped",
-                "errors",
-            )
-        )
-        summary["duration_seconds"] = float(
-            pytest_match.group("duration")
-        )
-
-    return summary
-
-
-def build_fallback_evidence(request):
-    logs = f"{request.stdout}\n{request.stderr}"
-    summary = extract_console_summary(logs)
-
-    if request.failure_type in ENVIRONMENT_FAILURES:
-        execution_status = "FAILED_TO_START"
-        test_result = "NOT_RUN"
-    elif request.failure_type in DISCOVERY_FAILURES:
-        execution_status = "COMPLETED"
-        test_result = "NOT_RUN"
-    elif request.failure_type in TIMEOUT_FAILURES:
-        execution_status = "TIMED_OUT"
-        test_result = "INCONCLUSIVE"
-    elif request.failure_type in EXECUTION_FAILURES and request.exit_code is None:
-        execution_status = "FAILED_TO_START"
-        test_result = "NOT_RUN"
-    else:
-        execution_status = (
-            "COMPLETED"
-            if request.exit_code is not None
-            else "FAILED_TO_START"
-        )
-
-        if summary["failed"] or summary["errors"]:
-            test_result = "FAIL"
-        elif summary["total"] and request.success:
-            test_result = "PASS"
-        elif request.success:
-            test_result = "INCONCLUSIVE"
-        else:
-            test_result = "FAIL"
-
-    warnings = []
-    lower_logs = logs.lower()
-
-    if "warning" in lower_logs:
-        warnings.append(
-            "Warnings were detected in the execution output."
-        )
-
-    if (
-        "mockito" in lower_logs
-        and "dynamic loading of agents" in lower_logs
-    ):
-        warnings.append(
-            "Mockito dynamic Java agent loading was detected and may require future JDK configuration changes."
-        )
-
-    return RuntimeEvidence.model_validate(
-        {
-            "framework": request.project_type,
-            "command": request.command,
-            "execution_status": execution_status,
-            "test_result": test_result,
-            "exit_code": request.exit_code,
-            "test_summary": summary,
-            "warnings": warnings,
-            "report_source": "CONSOLE_FALLBACK",
-            "evidence_quality": "LOG_ONLY",
-            "failure_type": request.failure_type,
-            "help_message": request.help_message,
-        }
-    )
-
-
-def select_evidence(request):
-    if request.runtime_evidence is None:
-        return build_fallback_evidence(request)
-
-    evidence = request.runtime_evidence.model_copy(
-        deep=True
-    )
-
-    if evidence.failure_type is None:
-        evidence.failure_type = request.failure_type
-
-    if evidence.help_message is None:
-        evidence.help_message = request.help_message
-
-    if evidence.command is None:
-        evidence.command = request.command
-
-    if evidence.exit_code is None:
-        evidence.exit_code = request.exit_code
-
-    return evidence
-
-
 def normalize_exception_type(value):
-    text = str(
-        value or "UnknownFailure"
-    ).strip()
-
-    return (
-        text.rsplit(".", 1)[-1]
-        if text
-        else "UnknownFailure"
-    )
+    text = str(value or "UnknownFailure").strip()
+    return text.rsplit(".", 1)[-1] if text else "UnknownFailure"
 
 
 def failure_category(failure):
     exception_type = normalize_exception_type(
-        failure.exception_type
+        failure.get("exception_type")
     ).lower()
     message = str(
-        failure.exception_message or ""
+        failure.get("exception_message") or ""
     ).lower()
 
-    if (
-        "zero" in exception_type
-        and "division" in exception_type
-    ):
+    if "zero" in exception_type and "division" in exception_type:
         return "INPUT_VALIDATION"
 
     if (
         "assert" in exception_type
-        or failure.expected
-        or failure.actual
+        or failure.get("expected")
+        or failure.get("actual")
     ):
         return "ASSERTION_FAILURE"
 
-    if (
-        "module" in exception_type
-        or "import" in exception_type
-    ):
+    if "module" in exception_type or "import" in exception_type:
         return "DEPENDENCY_FAILURE"
 
-    if (
-        "timeout" in exception_type
-        or "timeout" in message
-    ):
+    if "timeout" in exception_type or "timeout" in message:
         return "TIMEOUT"
 
-    if (
-        "permission" in exception_type
-        or "permission" in message
-    ):
+    if "permission" in exception_type or "permission" in message:
         return "PERMISSION_FAILURE"
 
-    if (
-        "connection" in exception_type
-        or "network" in message
-    ):
+    if "connection" in exception_type or "network" in message:
         return "NETWORK_FAILURE"
 
     return "RUNTIME_EXCEPTION"
@@ -288,17 +106,17 @@ def failure_signature(failure):
         r"\b\d+\b",
         "#",
         str(
-            failure.exception_message or ""
+            failure.get("exception_message") or ""
         ).strip().lower(),
     )
 
     return (
         failure_category(failure),
         normalize_exception_type(
-            failure.exception_type
+            failure.get("exception_type")
         ),
-        str(failure.expected or "").strip(),
-        str(failure.actual or "").strip(),
+        str(failure.get("expected") or "").strip(),
+        str(failure.get("actual") or "").strip(),
         normalized_message,
     )
 
@@ -325,37 +143,30 @@ def failure_origin_for_category(category):
 
 
 def failure_location(failure):
-    if (
-        failure.application_file
-        and failure.application_line
-    ):
-        return (
-            f"{failure.application_file}:"
-            f"{failure.application_line}"
-        )
+    application_file = failure.get("application_file")
+    application_line = failure.get("application_line")
+    test_file = failure.get("test_file")
+    test_line = failure.get("test_line")
 
-    if failure.application_file:
-        return failure.application_file
+    if application_file and application_line:
+        return f"{application_file}:{application_line}"
 
-    if (
-        failure.test_file
-        and failure.test_line
-    ):
-        return (
-            f"{failure.test_file}:"
-            f"{failure.test_line}"
-        )
+    if application_file:
+        return application_file
 
-    if failure.test_file:
-        return failure.test_file
+    if test_file and test_line:
+        return f"{test_file}:{test_line}"
+
+    if test_file:
+        return test_file
 
     return "an unmapped tested runtime path"
 
 
 def failure_observation(failure):
     test_name = short_text(
-        failure.test_name
-        or failure.id
+        failure.get("test_name")
+        or failure.get("id")
         or "unknown test",
         180,
     )
@@ -364,28 +175,25 @@ def failure_observation(failure):
         220,
     )
     exception_type = normalize_exception_type(
-        failure.exception_type
+        failure.get("exception_type")
     )
     exception_message = short_text(
-        failure.exception_message,
+        failure.get("exception_message"),
         240,
     )
     expected = short_text(
-        failure.expected,
+        failure.get("expected"),
         220,
     )
     actual = short_text(
-        failure.actual,
+        failure.get("actual"),
         220,
     )
 
     observed = exception_type
 
     if exception_message:
-        observed = (
-            f"{exception_type} "
-            f"({exception_message})"
-        )
+        observed = f"{exception_type} ({exception_message})"
     elif actual:
         observed = actual
 
@@ -395,16 +203,13 @@ def failure_observation(failure):
             f"{observed} instead of the expected {expected} contract"
         )
 
-    return (
-        f"{test_name} reached {location} and produced "
-        f"{observed}"
-    )
+    return f"{test_name} reached {location} and produced {observed}"
 
 
 def build_default_root_cause(failures, category):
     first = failures[0]
     exception_type = normalize_exception_type(
-        first.exception_type
+        first.get("exception_type")
     )
     observations = "; ".join(
         failure_observation(failure)
@@ -413,15 +218,11 @@ def build_default_root_cause(failures, category):
 
     if len(failures) > 3:
         observations += (
-            f"; {len(failures) - 3} additional affected "
-            "test paths are represented by the same validated "
-            "failure pattern"
+            f"; {len(failures) - 3} additional affected test paths are "
+            "represented by the same validated failure pattern"
         )
 
-    if (
-        category == "INPUT_VALIDATION"
-        and exception_type == "ZeroDivisionError"
-    ):
+    if category == "INPUT_VALIDATION" and exception_type == "ZeroDivisionError":
         return (
             "Boundary-input validation is missing or insufficient before an operation "
             "that can create a zero divisor. "
@@ -482,47 +283,32 @@ def build_default_impact(failures, category):
         )
 
     if category == "DEPENDENCY_FAILURE":
-        return (
-            "The validated runtime or test workflow cannot complete reliably until the dependency problem is resolved."
-        )
+        return "The validated runtime or test workflow cannot complete reliably until the dependency problem is resolved."
 
     if category == "TIMEOUT":
-        return (
-            "The validated workflow may exceed execution limits, remain blocked, or produce an inconclusive runtime result."
-        )
+        return "The validated workflow may exceed execution limits, remain blocked, or produce an inconclusive runtime result."
 
     if category == "PERMISSION_FAILURE":
-        return (
-            "The affected validated runtime path cannot complete under the observed permission configuration."
-        )
+        return "The affected validated runtime path cannot complete under the observed permission configuration."
 
     if category == "NETWORK_FAILURE":
-        return (
-            "The affected validated runtime path is unavailable or unreliable when the observed connection failure occurs."
-        )
+        return "The affected validated runtime path is unavailable or unreliable when the observed connection failure occurs."
 
-    return (
-        "The affected tested runtime path fails before completing its expected behavior."
-    )
+    return "The affected tested runtime path fails before completing its expected behavior."
 
 
 def build_default_action(failures, category):
     affected_tests = unique_strings(
-        failure.test_name or failure.id
+        failure.get("test_name") or failure.get("id")
         for failure in failures
     )
-    affected_text = ", ".join(
-        affected_tests[:6]
-    ) or "the affected tests"
-
+    affected_text = ", ".join(affected_tests[:6]) or "the affected tests"
     expected_contracts = unique_strings(
-        failure.expected
+        failure.get("expected")
         for failure in failures
-        if failure.expected
+        if failure.get("expected")
     )
-    expected_text = ", ".join(
-        expected_contracts[:4]
-    )
+    expected_text = ", ".join(expected_contracts[:4])
 
     if category == "INPUT_VALIDATION":
         contract_text = (
@@ -580,39 +366,32 @@ def build_default_action(failures, category):
 
 def evidence_location(failure):
     return {
-        "failure_id": failure.id,
-        "status": failure.status,
-        "test_name": failure.test_name,
-        "test_file": failure.test_file,
-        "test_line": failure.test_line,
-        "exception_type": failure.exception_type,
-        "exception_message": failure.exception_message,
-        "expected": failure.expected,
-        "actual": failure.actual,
-        "application_file": failure.application_file,
-        "application_line": failure.application_line,
+        "failure_id": failure.get("id"),
+        "status": failure.get("status"),
+        "test_name": failure.get("test_name"),
+        "test_file": failure.get("test_file"),
+        "test_line": failure.get("test_line"),
+        "exception_type": failure.get("exception_type"),
+        "exception_message": failure.get("exception_message"),
+        "expected": failure.get("expected"),
+        "actual": failure.get("actual"),
+        "application_file": failure.get("application_file"),
+        "application_line": failure.get("application_line"),
     }
 
 
 def build_root_cause_groups(evidence):
     grouped = defaultdict(list)
 
-    for item in evidence.failures:
-        grouped[
-            failure_signature(item)
-        ].append(item)
+    for item in evidence.get("failures", []):
+        if isinstance(item, dict):
+            grouped[failure_signature(item)].append(item)
 
     groups = []
 
-    for index, failures in enumerate(
-        grouped.values(),
-        start=1,
-    ):
-        category = failure_category(
-            failures[0]
-        )
+    for index, failures in enumerate(grouped.values(), start=1):
+        category = failure_category(failures[0])
         count = len(failures)
-
         groups.append(
             {
                 "group_id": f"RQI-{index:03d}",
@@ -621,23 +400,12 @@ def build_root_cause_groups(evidence):
                     f"{count} test{'s' if count != 1 else ''}"
                 ),
                 "category": category,
-                "failure_origin": failure_origin_for_category(
-                    category
-                ),
-                "root_cause": build_default_root_cause(
-                    failures,
-                    category,
-                ),
-                "runtime_impact": build_default_impact(
-                    failures,
-                    category,
-                ),
-                "required_action": build_default_action(
-                    failures,
-                    category,
-                ),
+                "failure_origin": failure_origin_for_category(category),
+                "root_cause": build_default_root_cause(failures, category),
+                "runtime_impact": build_default_impact(failures, category),
+                "required_action": build_default_action(failures, category),
                 "affected_tests": unique_strings(
-                    item.test_name or item.id
+                    item.get("test_name") or item.get("id")
                     for item in failures
                 ),
                 "evidence": [
@@ -650,17 +418,16 @@ def build_root_cause_groups(evidence):
     return groups
 
 
-def build_environment_group(evidence, request):
+def build_environment_group(evidence, execution_result):
     failure_type = (
-        evidence.failure_type
-        or request.failure_type
+        evidence.get("failure_type")
+        or execution_result.get("failure_type")
         or "EXECUTION_ENVIRONMENT"
     )
     help_message = (
-        evidence.help_message
-        or request.help_message
+        evidence.get("help_message")
+        or execution_result.get("help_message")
     )
-
     mapping = {
         "MAVEN_NOT_AVAILABLE": (
             "Maven is not installed or is unavailable in PATH.",
@@ -692,11 +459,6 @@ def build_environment_group(evidence, request):
             "Runtime behavior was not verified because no automated tests were executed.",
             "Add or correctly configure compatible tests, then rerun Stitch QA.",
         ),
-        "COMMAND_TIMEOUT": (
-            "The validated execution command exceeded the configured timeout.",
-            "The QA run ended before a conclusive runtime result was produced.",
-            "Investigate the long-running operation or hang, then rerun the workflow.",
-        ),
         "INVALID_PROJECT_PATH": (
             "The requested project path was not valid or accessible to the test runner.",
             "The runtime test workflow did not start, so no runtime result was established.",
@@ -706,6 +468,11 @@ def build_environment_group(evidence, request):
             "The requested execution command did not match an allowed Stitch QA execution profile.",
             "The command was not executed, so runtime evidence for the intended test workflow is unavailable.",
             "Use a supported built-in execution profile and rerun Stitch QA.",
+        ),
+        "COMMAND_TIMEOUT": (
+            "The validated execution command exceeded the configured timeout.",
+            "The QA run ended before a conclusive runtime result was produced.",
+            "Investigate the long-running operation or hang, then rerun the workflow.",
         ),
         "EXECUTION_OS_ERROR": (
             "The operating system prevented the validated execution command from completing.",
@@ -718,7 +485,6 @@ def build_environment_group(evidence, request):
             "Resolve the execution-layer error and rerun Stitch QA.",
         ),
     }
-
     root_cause, impact, action = mapping.get(
         failure_type,
         (
@@ -741,10 +507,7 @@ def build_environment_group(evidence, request):
 
     return {
         "group_id": "RQI-001",
-        "title": failure_type.replace(
-            "_",
-            " ",
-        ).title(),
+        "title": failure_type.replace("_", " ").title(),
         "category": category,
         "failure_origin": failure_origin,
         "root_cause": root_cause,
@@ -755,69 +518,68 @@ def build_environment_group(evidence, request):
             {
                 "failure_type": failure_type,
                 "help_message": help_message,
-                "command": request.command,
-                "exit_code": request.exit_code,
+                "command": execution_result.get("command"),
+                "exit_code": execution_result.get("exit_code"),
             }
         ],
     }
 
 
-def determine_release_gate(evidence, request):
+def determine_release_gate(evidence, execution_result):
     failure_type = (
-        evidence.failure_type
-        or request.failure_type
+        evidence.get("failure_type")
+        or execution_result.get("failure_type")
     )
+    execution_status = str(
+        evidence.get("execution_status") or "UNKNOWN"
+    ).upper()
+    test_result = str(
+        evidence.get("test_result") or "INCONCLUSIVE"
+    ).upper()
 
-    if (
-        failure_type in ENVIRONMENT_FAILURES
-        or failure_type in DISCOVERY_FAILURES
-    ):
+    if failure_type in ENVIRONMENT_FAILURES or failure_type in DISCOVERY_FAILURES:
         return "REVIEW_REQUIRED"
 
-    if evidence.execution_status in {
+    if execution_status in {
         "FAILED_TO_START",
         "TIMED_OUT",
         "SKIPPED",
     }:
         return "REVIEW_REQUIRED"
 
-    if evidence.test_result == "FAIL":
+    if test_result == "FAIL":
         return "BLOCK_RELEASE"
 
-    if evidence.test_result in {
-        "NOT_RUN",
-        "INCONCLUSIVE",
-    }:
+    if test_result in {"NOT_RUN", "INCONCLUSIVE"}:
         return "REVIEW_REQUIRED"
 
-    if (
-        evidence.warnings
-        or evidence.collection_errors
-    ):
+    if evidence.get("warnings") or evidence.get("collection_errors"):
         return "ALLOW_WITH_WARNINGS"
 
     return "ALLOW_RELEASE"
 
 
 def determine_confidence(evidence, groups):
-    if evidence.evidence_quality == "STRUCTURED":
-        if (
-            evidence.collection_errors
-            or evidence.evidence_truncated
-        ):
+    evidence_quality = str(
+        evidence.get("evidence_quality") or "NONE"
+    ).upper()
+    test_result = str(
+        evidence.get("test_result") or "INCONCLUSIVE"
+    ).upper()
+
+    if evidence_quality == "STRUCTURED":
+        if evidence.get("collection_errors") or evidence.get("evidence_truncated"):
             return "MEDIUM"
 
-        if evidence.test_result == "PASS":
+        if test_result == "PASS":
             return "HIGH"
 
         if groups:
             evidence_items = [
                 item
                 for group in groups
-                for item in group.get(
-                    "evidence",
-                    [],
-                )
+                for item in group.get("evidence", [])
+                if isinstance(item, dict)
             ]
             mapped_items = [
                 item
@@ -829,26 +591,18 @@ def determine_confidence(evidence, groups):
                 )
             ]
 
-            if (
-                evidence_items
-                and len(mapped_items)
-                == len(evidence_items)
-            ):
+            if evidence_items and len(mapped_items) == len(evidence_items):
                 return "HIGH"
 
         return "MEDIUM"
 
-    if evidence.evidence_quality == "PARTIAL":
+    if evidence_quality in {"PARTIAL", "LOG_ONLY"}:
         return "MEDIUM"
 
     return "LOW"
 
 
-def determine_failure_origin(
-    evidence,
-    request,
-    groups,
-):
+def determine_failure_origin(evidence, execution_result, groups):
     origins = unique_strings(
         group.get("failure_origin")
         for group in groups
@@ -858,8 +612,8 @@ def determine_failure_origin(
         return "APPLICATION_DEFECT"
 
     failure_type = (
-        evidence.failure_type
-        or request.failure_type
+        evidence.get("failure_type")
+        or execution_result.get("failure_type")
     )
 
     if failure_type in ENVIRONMENT_FAILURES:
@@ -882,82 +636,71 @@ def determine_failure_origin(
     return "NOT_ESTABLISHED"
 
 
-def determine_runtime_risk(
-    evidence,
-    release_gate,
-    failure_origin,
-):
-    if evidence.test_result == "PASS":
+def determine_runtime_risk(evidence, release_gate):
+    test_result = str(
+        evidence.get("test_result") or "INCONCLUSIVE"
+    ).upper()
+
+    if test_result == "PASS":
         if (
             release_gate == "ALLOW_WITH_WARNINGS"
-            or evidence.warnings
-            or evidence.collection_errors
+            or evidence.get("warnings")
+            or evidence.get("collection_errors")
         ):
             return "MEDIUM"
 
         return "LOW"
 
-    if evidence.test_result == "FAIL":
+    if test_result == "FAIL":
         return "HIGH"
-
-    if evidence.test_result in {
-        "NOT_RUN",
-        "INCONCLUSIVE",
-    }:
-        return "UNKNOWN"
 
     return "UNKNOWN"
 
 
-def build_summary(
-    evidence,
-    release_gate,
-    groups,
-    request,
-):
-    summary = evidence.test_summary
+def build_summary(evidence, release_gate, groups, scan_result):
+    summary = evidence.get("test_summary") or {}
     framework = (
-        evidence.framework
-        or request.project_type
+        evidence.get("framework")
+        or scan_result.get("project_type")
+        or "runtime"
     )
+    test_result = str(
+        evidence.get("test_result") or "INCONCLUSIVE"
+    ).upper()
 
-    if evidence.test_result == "PASS":
+    if test_result == "PASS":
         warning_text = (
             " Supplied runtime warnings still require review."
-            if evidence.warnings
+            if evidence.get("warnings")
             else ""
         )
-
         return (
             f"The validated {framework} runtime test workflow completed successfully within the exercised scope: "
-            f"{summary.total} tests were executed, {summary.passed} passed, with no confirmed test failures or execution errors. "
+            f"{safe_int(summary.get('total'))} tests were executed, {safe_int(summary.get('passed'))} passed, "
+            "with no confirmed test failures or execution errors. "
             f"The runtime gate is {release_gate} for the tested runtime scope only."
             f"{warning_text}"
         )
 
-    if evidence.test_result == "FAIL":
-        failed_count = (
-            summary.failed
-            + summary.errors
-        )
+    if test_result == "FAIL":
+        failed_count = safe_int(summary.get("failed")) + safe_int(summary.get("errors"))
         group_count = len(groups)
-
         return (
             f"The validated {framework} runtime test workflow failed within the exercised scope: "
             f"{failed_count} tests failed or errored and were organized into "
-            f"{group_count} evidence-backed root-cause group"
-            f"{'s' if group_count != 1 else ''}. "
+            f"{group_count} evidence-backed root-cause group{'s' if group_count != 1 else ''}. "
             f"The runtime gate is {release_gate} until the confirmed tested-path failures are resolved and verified."
         )
 
-    if evidence.test_result == "NOT_RUN":
+    if test_result == "NOT_RUN":
         return (
             "The validated runtime test workflow did not establish an executed test result. "
             f"The runtime gate is {release_gate} because runtime evidence for the intended tested scope remains incomplete."
         )
 
+    command = evidence.get("command") or "the validated command"
     return (
-        f"The validated runtime result for `{request.command}` is inconclusive within the intended tested scope. "
+        f"The validated runtime result for `{command}` is inconclusive within the intended tested scope. "
         f"The runtime gate is {release_gate} until the execution barrier is resolved and conclusive runtime evidence is collected."
     )
 
@@ -967,25 +710,23 @@ def build_verification_steps(evidence, groups):
     affected_tests = unique_strings(
         test
         for group in groups
-        for test in group.get(
-            "affected_tests",
-            [],
-        )
+        for test in group.get("affected_tests", [])
     )
+    test_result = str(
+        evidence.get("test_result") or "INCONCLUSIVE"
+    ).upper()
 
     if affected_tests:
         steps.append(
             "Rerun the affected tests and confirm that each previously failing test passes."
         )
 
-    if evidence.test_result == "FAIL":
-        steps.append(
-            "Run the complete test suite after the targeted verification."
-        )
+    if test_result == "FAIL":
+        steps.append("Run the complete test suite after the targeted verification.")
         steps.append(
             "Confirm that the full validated test command exits with code 0 and introduces no regression."
         )
-    elif evidence.test_result == "PASS":
+    elif test_result == "PASS":
         steps.append(
             "Retain the structured runtime evidence with the tested-scope release record."
         )
@@ -997,84 +738,106 @@ def build_verification_steps(evidence, groups):
     return unique_strings(steps)
 
 
-def build_limitations(evidence):
+def build_limitations(evidence, service_error):
     limitations = [
-        "This assessment is limited to supplied runtime and automated test evidence and does not establish complete application correctness."
+        "This assessment is limited to supplied runtime and automated test evidence and does not establish complete application correctness.",
+        "The remote Runtime Quality Intelligence service was unavailable or returned an unusable response, so this result was produced by the local deterministic runtime fallback.",
     ]
 
-    if evidence.evidence_quality != "STRUCTURED":
+    if str(evidence.get("evidence_quality") or "NONE").upper() != "STRUCTURED":
         limitations.append(
             "Structured test-report evidence was unavailable or incomplete, so parts of the assessment rely on console output."
         )
 
-    if evidence.collection_errors:
+    if evidence.get("collection_errors"):
         limitations.append(
             "One or more structured evidence files could not be parsed completely."
         )
 
-    if evidence.evidence_truncated:
+    if evidence.get("evidence_truncated"):
         limitations.append(
-            "Submitted failure-detail records were truncated for inference limits, while aggregate test counts remain parser-validated."
+            "Submitted failure-detail records were truncated for transport limits, while aggregate test counts remain parser-validated."
         )
+
+    if not service_error:
+        return unique_strings(limitations[0:1])
 
     return unique_strings(limitations)
 
 
-def build_base_analysis(request: LogAnalysisRequest):
-    evidence = select_evidence(request)
+def build_client_runtime_fallback(scan_result, execution_result, service_error=None):
+    evidence = execution_result.get("runtime_evidence")
+
+    if not isinstance(evidence, dict):
+        evidence = {
+            "framework": scan_result.get("project_type"),
+            "command": execution_result.get("command"),
+            "execution_status": execution_result.get("execution_status") or "UNKNOWN",
+            "test_result": execution_result.get("test_result") or "INCONCLUSIVE",
+            "exit_code": execution_result.get("exit_code"),
+            "duration_seconds": execution_result.get("duration_seconds"),
+            "test_summary": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "duration_seconds": execution_result.get("duration_seconds"),
+            },
+            "failures": [],
+            "failure_records_total": 0,
+            "failure_records_submitted": 0,
+            "evidence_truncated": False,
+            "warnings": [],
+            "report_files": [],
+            "report_source": "NONE",
+            "evidence_quality": "NONE",
+            "collection_errors": [],
+            "failure_type": execution_result.get("failure_type"),
+            "help_message": execution_result.get("help_message"),
+        }
+    else:
+        evidence = dict(evidence)
+
     groups = build_root_cause_groups(evidence)
+    test_result = str(
+        evidence.get("test_result") or "INCONCLUSIVE"
+    ).upper()
 
     if not groups and (
-        evidence.failure_type
-        or request.failure_type
-        or evidence.test_result in {
-            "NOT_RUN",
-            "INCONCLUSIVE",
-        }
-        or not request.success
+        evidence.get("failure_type")
+        or execution_result.get("failure_type")
+        or test_result in {"NOT_RUN", "INCONCLUSIVE"}
+        or not execution_result.get("success")
     ):
         groups = [
-            build_environment_group(
-                evidence,
-                request,
-            )
+            build_environment_group(evidence, execution_result)
         ]
 
-    release_gate = determine_release_gate(
-        evidence,
-        request,
-    )
-    confidence = determine_confidence(
-        evidence,
-        groups,
-    )
+    release_gate = determine_release_gate(evidence, execution_result)
+    confidence = determine_confidence(evidence, groups)
     failure_origin = determine_failure_origin(
         evidence,
-        request,
+        execution_result,
         groups,
     )
     runtime_risk_level = determine_runtime_risk(
         evidence,
         release_gate,
-        failure_origin,
     )
     summary = build_summary(
         evidence,
         release_gate,
         groups,
-        request,
+        scan_result,
     )
-
     required_actions = unique_strings(
         group.get("required_action")
         for group in groups
     )
 
-    if (
-        not required_actions
-        and evidence.test_result == "PASS"
-    ):
-        if evidence.warnings:
+    if not required_actions and test_result == "PASS":
+        if evidence.get("warnings"):
             required_actions = [
                 "Review the supplied runtime warnings and retain the structured evidence with the tested-scope release record."
             ]
@@ -1095,29 +858,34 @@ def build_base_analysis(request: LogAnalysisRequest):
     )
     final_status = (
         "PASS"
-        if release_gate in {
-            "ALLOW_RELEASE",
-            "ALLOW_WITH_WARNINGS",
-        }
+        if release_gate in {"ALLOW_RELEASE", "ALLOW_WITH_WARNINGS"}
         else "FAIL"
     )
     warnings = unique_strings(
-        evidence.warnings
+        [
+            *evidence.get("warnings", []),
+            (
+                f"Remote Runtime Quality Intelligence service fallback: {service_error}"
+                if service_error
+                else None
+            ),
+        ]
     )
     issues = unique_strings(
         group.get("title")
         for group in groups
     )
+    test_summary = evidence.get("test_summary") or {}
 
     return {
         "agent_id": AGENT_ID,
         "display_name": DISPLAY_NAME,
         "agent_version": AGENT_VERSION,
         "agent": "log-agent",
-        "mode": "rule-based-validated",
+        "mode": "client-rule-based-fallback",
         "model": None,
-        "execution_status": evidence.execution_status,
-        "test_result": evidence.test_result,
+        "execution_status": evidence.get("execution_status") or "UNKNOWN",
+        "test_result": test_result,
         "release_gate": release_gate,
         "runtime_risk_level": runtime_risk_level,
         "failure_origin": failure_origin,
@@ -1125,32 +893,30 @@ def build_base_analysis(request: LogAnalysisRequest):
         "final_status": final_status,
         "summary": summary,
         "run_summary": {
-            "framework": evidence.framework,
-            "command": (
-                evidence.command
-                or request.command
-            ),
-            "total": evidence.test_summary.total,
-            "passed": evidence.test_summary.passed,
-            "failed": evidence.test_summary.failed,
-            "skipped": evidence.test_summary.skipped,
-            "errors": evidence.test_summary.errors,
-            "exit_code": evidence.exit_code,
+            "framework": evidence.get("framework") or scan_result.get("project_type"),
+            "command": evidence.get("command") or execution_result.get("command"),
+            "total": safe_int(test_summary.get("total")),
+            "passed": safe_int(test_summary.get("passed")),
+            "failed": safe_int(test_summary.get("failed")),
+            "skipped": safe_int(test_summary.get("skipped")),
+            "errors": safe_int(test_summary.get("errors")),
+            "exit_code": evidence.get("exit_code", execution_result.get("exit_code")),
             "duration_seconds": (
-                evidence.duration_seconds
-                or evidence.test_summary.duration_seconds
+                evidence.get("duration_seconds")
+                or test_summary.get("duration_seconds")
+                or execution_result.get("duration_seconds")
             ),
-            "report_source": evidence.report_source,
-            "report_files": evidence.report_files,
-            "failure_records_total": (
-                evidence.failure_records_total
-                or len(evidence.failures)
+            "report_source": evidence.get("report_source") or "NONE",
+            "report_files": list(evidence.get("report_files") or []),
+            "failure_records_total": safe_int(
+                evidence.get("failure_records_total"),
+                len(evidence.get("failures") or []),
             ),
-            "failure_records_submitted": (
-                evidence.failure_records_submitted
-                or len(evidence.failures)
+            "failure_records_submitted": safe_int(
+                evidence.get("failure_records_submitted"),
+                len(evidence.get("failures") or []),
             ),
-            "evidence_truncated": evidence.evidence_truncated,
+            "evidence_truncated": bool(evidence.get("evidence_truncated")),
         },
         "root_cause_groups": groups,
         "primary_root_cause": primary_root_cause,
@@ -1162,27 +928,10 @@ def build_base_analysis(request: LogAnalysisRequest):
             if required_actions
             else "No blocking runtime remediation was identified within the tested scope."
         ),
-        "verification_steps": build_verification_steps(
-            evidence,
-            groups,
-        ),
+        "verification_steps": build_verification_steps(evidence, groups),
         "issues": issues,
         "warnings": warnings,
-        "limitations": build_limitations(
-            evidence
-        ),
-        "evidence_quality": evidence.evidence_quality,
+        "limitations": build_limitations(evidence, service_error),
+        "evidence_quality": evidence.get("evidence_quality") or "NONE",
         "llm_error": None,
     }
-
-
-def should_use_llm(base_analysis):
-    return (
-        bool(
-            base_analysis.get(
-                "root_cause_groups"
-            )
-        )
-        and base_analysis.get("test_result")
-        != "PASS"
-    )

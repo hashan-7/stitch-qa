@@ -182,7 +182,7 @@ def print_log_agent_result(
     )
     console.print(
         f"[bold]Model:[/bold] "
-        f"{agent_data.get('model') or 'Deterministic fallback'}"
+        f"{agent_data.get('model') or 'Not used'}"
     )
     console.print(
         f"[bold]Execution Status:[/bold] "
@@ -1278,7 +1278,9 @@ def scan(
                     build_unavailable_log_analysis(
                         analysis_result[
                             "error"
-                        ]
+                        ],
+                        result,
+                        execution_result,
                     )
                 )
 
