@@ -1254,48 +1254,28 @@ def should_use_llm(base_analysis):
         or []
     )
 
-    if test_result in {
-        "PASS",
-        "NOT_RUN",
-        "INCONCLUSIVE",
-    }:
-        return False
-
-    if not groups:
-        return False
-
-    confidence = str(
-        base_analysis.get("diagnosis_confidence")
-        or "LOW"
-    ).upper()
-    failure_origin = str(
-        base_analysis.get("failure_origin")
-        or "NOT_ESTABLISHED"
-    ).upper()
-    evidence_quality = str(
-        base_analysis.get("evidence_quality")
-        or "NONE"
-    ).upper()
-
-    if len(groups) > 1:
-        return True
-
-    if failure_origin == "NOT_ESTABLISHED":
-        return True
-
-    if confidence != "HIGH":
-        return True
-
-    if evidence_quality != "STRUCTURED":
-        return True
-
-    complex_categories = {
-        "RUNTIME_EXCEPTION",
-    }
-    categories = {
-        str(group.get("category") or "").upper()
+    failure_records = [
+        item
         for group in groups
-    }
+        for item in group.get("evidence", [])
+        if item.get("failure_id") or item.get("id")
+    ]
 
-    return bool(categories & complex_categories)
+    if test_result == "FAIL":
+        return bool(failure_records)
 
+    if test_result == "INCONCLUSIVE":
+        evidence_quality = str(
+            base_analysis.get("evidence_quality")
+            or "NONE"
+        ).upper()
+        failure_origin = str(
+            base_analysis.get("failure_origin")
+            or "NOT_ESTABLISHED"
+        ).upper()
+        return (
+            evidence_quality not in {"NONE"}
+            or failure_origin == "NOT_ESTABLISHED"
+        )
+
+    return False

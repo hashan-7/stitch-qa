@@ -29,19 +29,21 @@ app = FastAPI(
 
 
 def get_llm_policy():
-    value = os.getenv("LLM_POLICY", "ADAPTIVE").strip().upper()
-    return value if value in LLM_POLICIES else "ADAPTIVE"
+    value = os.getenv("LLM_POLICY", "FAILURES_ONLY").strip().upper()
+    return value if value in LLM_POLICIES else "FAILURES_ONLY"
 
 
 def should_attempt_llm(result, policy):
-    if not model_service.enabled:
+    if not model_service.enabled or policy == "DISABLED":
         return False
 
-    if policy == "DISABLED":
-        return False
+    test_result = str(result.get("test_result") or "INCONCLUSIVE").upper()
 
     if policy == "ALWAYS":
         return True
+
+    if policy == "FAILURES_ONLY":
+        return test_result == "FAIL" and should_use_llm(result)
 
     return should_use_llm(result)
 
@@ -92,7 +94,7 @@ def analyze_logs(request: LogAnalysisRequest):
         model_text = model_service.generate(messages)
         model_payload = validate_model_output(model_text, result)
         result = merge_model_output(result, model_payload)
-        result["mode"] = "hybrid-validated"
+        result["mode"] = "ai-reasoned-validated"
         result["model"] = model_service.model_name or model_service.primary_model
         result["llm_metrics"] = model_service.last_generation
         result["llm_error"] = None
@@ -103,4 +105,3 @@ def analyze_logs(request: LogAnalysisRequest):
         result["llm_error"] = repr(error)
 
     return LogAnalysisResponse.model_validate(result)
-

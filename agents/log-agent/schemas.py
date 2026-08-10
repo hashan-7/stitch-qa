@@ -19,6 +19,12 @@ FailureOrigin = Literal[
     "NOT_ESTABLISHED",
 ]
 
+DiagnosisConfidence = Literal[
+    "HIGH",
+    "MEDIUM",
+    "LOW",
+]
+
 
 class TestRunSummary(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -103,24 +109,26 @@ class RootCauseGroup(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
 
 
-class ModelGroupInsight(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ModelReasoningGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    group_id: str = Field(min_length=1, max_length=80)
-    root_cause: str = Field(min_length=10, max_length=700)
+    failure_ids: list[str] = Field(alias="f", min_length=1, max_length=100)
+    category: str = Field(alias="k", min_length=2, max_length=80)
+    failure_origin: FailureOrigin = Field(alias="o")
+    root_cause: str = Field(alias="c", min_length=8, max_length=600)
+    runtime_impact: str = Field(alias="i", min_length=8, max_length=500)
+    required_action: str = Field(alias="a", min_length=8, max_length=500)
 
 
 class ModelAnalysisPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    outcome_interpretation: str = Field(min_length=20, max_length=600)
-    scope_assurance: str = Field(min_length=20, max_length=600)
-    residual_runtime_risk: str = Field(min_length=20, max_length=600)
-    next_verification: str = Field(min_length=20, max_length=600)
-    group_insights: list[ModelGroupInsight] = Field(
-        default_factory=list,
-        max_length=20,
-    )
+    summary: str = Field(alias="s", min_length=12, max_length=500)
+    failure_origin: FailureOrigin = Field(alias="o")
+    runtime_risk_level: RuntimeRiskLevel = Field(alias="r")
+    diagnosis_confidence: DiagnosisConfidence = Field(alias="c")
+    next_verification: str = Field(alias="v", min_length=8, max_length=400)
+    groups: list[ModelReasoningGroup] = Field(alias="x", default_factory=list, max_length=20)
 
 
 class LogAnalysisResponse(BaseModel):
@@ -158,4 +166,3 @@ class LogAnalysisResponse(BaseModel):
     evidence_quality: str
     llm_metrics: dict[str, Any] | None = None
     llm_error: str | None = None
-

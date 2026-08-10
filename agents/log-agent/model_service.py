@@ -7,33 +7,17 @@ import time
 
 MODEL_RESPONSE_SCHEMA = {
     "type": "object",
+    "required": ["s", "o", "r", "c", "v", "x"],
     "properties": {
-        "outcome_interpretation": {"type": "string"},
-        "scope_assurance": {"type": "string"},
-        "residual_runtime_risk": {"type": "string"},
-        "next_verification": {"type": "string"},
-        "group_insights": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "group_id": {"type": "string"},
-                    "root_cause": {"type": "string"},
-                },
-                "required": ["group_id", "root_cause"],
-                "additionalProperties": False,
-            },
-        },
+        "s": {"type": "string"},
+        "o": {"type": "string"},
+        "r": {"type": "string"},
+        "c": {"type": "string"},
+        "v": {"type": "string"},
+        "x": {"type": "array"},
     },
-    "required": [
-        "outcome_interpretation",
-        "scope_assurance",
-        "residual_runtime_risk",
-        "next_verification",
-        "group_insights",
-    ],
-    "additionalProperties": False,
 }
+
 
 
 def env_bool(name, default):
@@ -90,19 +74,19 @@ class ModelService:
         )
         self.max_input_tokens = max(
             512,
-            int(os.getenv("MODEL_MAX_INPUT_TOKENS", "3072")),
+            int(os.getenv("MODEL_MAX_INPUT_TOKENS", "2048")),
         )
         self.max_new_tokens = max(
             96,
-            int(os.getenv("MODEL_MAX_NEW_TOKENS", "256")),
+            int(os.getenv("MODEL_MAX_NEW_TOKENS", "192")),
         )
         self.max_generation_seconds = max(
             10.0,
-            float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "60")),
+            float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "105")),
         )
         self.failure_cooldown_seconds = max(
             0.0,
-            float(os.getenv("MODEL_FAILURE_COOLDOWN_SECONDS", "300")),
+            float(os.getenv("MODEL_FAILURE_COOLDOWN_SECONDS", "180")),
         )
         self.prompt_cache_mb = max(
             0,
@@ -338,7 +322,6 @@ class ModelService:
     def _response_format(self):
         return {
             "type": "json_object",
-            "schema": MODEL_RESPONSE_SCHEMA,
         }
 
     def _create_stream(self, model, messages):
