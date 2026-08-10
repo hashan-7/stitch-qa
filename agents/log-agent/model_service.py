@@ -1,9 +1,84 @@
 import gc
 import os
 import threading
+import time
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
+
+
+JSON_PREFILL = "{"
+
+
+def complete_json_end(text):
+    value = str(text or "")
+    start = value.find("{")
+
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index in range(start, len(value)):
+        character = value[index]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+
+            if depth == 0:
+                return index + 1
+
+    return None
+
+
+def is_complete_json_object(text):
+    return complete_json_end(text) is not None
+
+
+class JsonObjectStoppingCriteria(StoppingCriteria):
+    def __init__(self, tokenizer, prompt_length, prefix=JSON_PREFILL):
+        self.tokenizer = tokenizer
+        self.prompt_length = int(prompt_length)
+        self.prefix = str(prefix)
+
+    def __call__(self, input_ids, scores, **kwargs):
+        results = []
+
+        for sequence in input_ids:
+            generated = sequence[self.prompt_length:]
+            text = self.prefix + self.tokenizer.decode(
+                generated,
+                skip_special_tokens=True,
+            )
+            results.append(
+                [is_complete_json_object(text)]
+            )
+
+        return torch.tensor(
+            results,
+            dtype=torch.bool,
+            device=input_ids.device,
+        )
 
 
 class ModelService:
@@ -29,12 +104,12 @@ class ModelService:
             int(os.getenv("MODEL_MAX_INPUT_TOKENS", "3072")),
         )
         self.max_new_tokens = max(
-            64,
-            int(os.getenv("MODEL_MAX_NEW_TOKENS", "512")),
+            96,
+            int(os.getenv("MODEL_MAX_NEW_TOKENS", "384")),
         )
         self.max_generation_seconds = max(
             10.0,
-            float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "80")),
+            float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "90")),
         )
         self.torch_threads = max(
             1,
@@ -53,6 +128,7 @@ class ModelService:
         self.model = None
         self.model_name = None
         self.load_error = None
+        self.last_generation = None
         self.load_lock = threading.Lock()
         self.generation_lock = threading.Lock()
         torch.set_num_threads(self.torch_threads)
@@ -134,25 +210,23 @@ class ModelService:
                 raise RuntimeError(self.load_error) from error
 
     def _build_inputs(self, messages):
-        try:
-            prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=False,
-            )
-        except TypeError:
-            prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+        prefilled_messages = [
+            *messages,
+            {
+                "role": "assistant",
+                "content": JSON_PREFILL,
+            },
+        ]
 
-        inputs = self.tokenizer(
-            prompt,
+        inputs = self.tokenizer.apply_chat_template(
+            prefilled_messages,
+            tokenize=True,
+            return_dict=True,
             return_tensors="pt",
-            truncation=False,
+            continue_final_message=True,
+            enable_thinking=False,
         )
+
         input_tokens = int(inputs["input_ids"].shape[-1])
 
         if input_tokens > self.max_input_tokens:
@@ -167,7 +241,17 @@ class ModelService:
 
         with self.generation_lock:
             inputs = self._build_inputs(messages)
+            prompt_length = int(inputs["input_ids"].shape[-1])
+            stopping_criteria = StoppingCriteriaList(
+                [
+                    JsonObjectStoppingCriteria(
+                        tokenizer,
+                        prompt_length,
+                    )
+                ]
+            )
             torch.manual_seed(self.seed)
+            started = time.monotonic()
 
             with torch.inference_mode():
                 output = model.generate(
@@ -179,15 +263,46 @@ class ModelService:
                     top_p=self.top_p,
                     top_k=self.top_k,
                     repetition_penalty=self.repetition_penalty,
+                    stopping_criteria=stopping_criteria,
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                 )
 
-            generated = output[0][inputs["input_ids"].shape[-1]:]
-            text = tokenizer.decode(
+            elapsed = time.monotonic() - started
+            generated = output[0][prompt_length:]
+            generated_tokens = int(generated.shape[-1])
+            decoded = tokenizer.decode(
                 generated,
                 skip_special_tokens=True,
-            ).strip()
+            )
+            text = JSON_PREFILL + decoded
+            complete_end = complete_json_end(text)
+            completed_json = complete_end is not None
+            hit_token_limit = generated_tokens >= self.max_new_tokens
+            hit_time_limit = elapsed >= self.max_generation_seconds
+
+            self.last_generation = {
+                "generated_tokens": generated_tokens,
+                "elapsed_seconds": round(elapsed, 3),
+                "completed_json": completed_json,
+                "hit_token_limit": hit_token_limit,
+                "hit_time_limit": hit_time_limit,
+            }
+
+            if not completed_json:
+                if hit_token_limit:
+                    reason = "max_new_tokens"
+                elif hit_time_limit:
+                    reason = "max_time"
+                else:
+                    reason = "model_stop"
+
+                raise RuntimeError(
+                    "The configured LLM stopped before completing the required JSON object "
+                    f"(reason={reason}, generated_tokens={generated_tokens}, elapsed_seconds={elapsed:.3f})."
+                )
+
+            text = text[:complete_end].strip()
 
             if not text:
                 raise RuntimeError("The configured LLM returned an empty response.")
@@ -221,6 +336,7 @@ class ModelService:
             "top_k": self.top_k,
             "repetition_penalty": self.repetition_penalty,
             "seed": self.seed,
+            "last_generation": self.last_generation,
         }
 
 

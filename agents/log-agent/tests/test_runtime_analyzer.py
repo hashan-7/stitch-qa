@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from runtime_analyzer import build_base_analysis
 from schemas import LogAnalysisRequest
-from validators import validate_model_output
+from validators import merge_model_output, validate_model_output
 
 
 def build_request():
@@ -104,8 +104,6 @@ def valid_model_payload():
             {
                 "group_id": "RQI-001",
                 "root_cause": "Input validation is insufficient because ZeroDivisionError is observed where ValueError is expected.",
-                "runtime_impact": "The exercised boundary-input paths terminate with the wrong exception contract.",
-                "required_action": "Add the expected boundary validation, rerun the affected tests, then run the full suite.",
             }
         ],
     }
@@ -148,3 +146,17 @@ def test_ungrounded_root_cause_is_rejected():
     )
     with pytest.raises(ValueError, match="not sufficiently grounded"):
         validate_model_output(json.dumps(data), base_analysis)
+
+
+def test_model_merge_refines_root_cause_without_replacing_deterministic_action_or_impact():
+    base_analysis = build_base_analysis(build_request())
+    payload = validate_model_output(
+        json.dumps(valid_model_payload()),
+        base_analysis,
+    )
+    original_impact = base_analysis["root_cause_groups"][0]["runtime_impact"]
+    original_action = base_analysis["root_cause_groups"][0]["required_action"]
+    merged = merge_model_output(base_analysis, payload)
+    assert merged["root_cause_groups"][0]["root_cause"] == payload.group_insights[0].root_cause
+    assert merged["root_cause_groups"][0]["runtime_impact"] == original_impact
+    assert merged["root_cause_groups"][0]["required_action"] == original_action

@@ -356,12 +356,8 @@ def assessment_texts(payload):
     ]
 
     for insight in payload.group_insights:
-        texts.extend(
-            [
-                insight.root_cause,
-                insight.runtime_impact,
-                insight.required_action,
-            ]
+        texts.append(
+            insight.root_cause
         )
 
     return texts
@@ -405,12 +401,6 @@ def normalize_payload(payload):
     for insight in payload.group_insights:
         insight.root_cause = normalize_prose(
             insight.root_cause
-        )
-        insight.runtime_impact = normalize_prose(
-            insight.runtime_impact
-        )
-        insight.required_action = normalize_prose(
-            insight.required_action
         )
 
     return payload
@@ -1012,12 +1002,6 @@ def merge_model_output(
 
         group["root_cause"] = (
             insight.root_cause
-        )
-        group["runtime_impact"] = (
-            insight.runtime_impact
-        )
-        group["required_action"] = (
-            insight.required_action
         )
 
     merged["root_cause_groups"] = groups

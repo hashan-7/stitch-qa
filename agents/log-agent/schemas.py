@@ -107,18 +107,16 @@ class ModelGroupInsight(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     group_id: str = Field(min_length=1, max_length=80)
-    root_cause: str = Field(min_length=10, max_length=1200)
-    runtime_impact: str = Field(min_length=10, max_length=1200)
-    required_action: str = Field(min_length=10, max_length=1200)
+    root_cause: str = Field(min_length=10, max_length=700)
 
 
 class ModelAnalysisPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    outcome_interpretation: str = Field(min_length=20, max_length=1000)
-    scope_assurance: str = Field(min_length=20, max_length=1000)
-    residual_runtime_risk: str = Field(min_length=20, max_length=1000)
-    next_verification: str = Field(min_length=20, max_length=1000)
+    outcome_interpretation: str = Field(min_length=20, max_length=600)
+    scope_assurance: str = Field(min_length=20, max_length=600)
+    residual_runtime_risk: str = Field(min_length=20, max_length=600)
+    next_verification: str = Field(min_length=20, max_length=600)
     group_insights: list[ModelGroupInsight] = Field(
         default_factory=list,
         max_length=20,

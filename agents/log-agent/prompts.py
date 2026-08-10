@@ -12,11 +12,13 @@ Do not claim that an application, product, system, or release is production-read
 
 Do not write release advice, release permission, release approval, or deployment readiness. The deterministic system will add the runtime gate sentence.
 
-Do not repeat the complete deterministic test summary. Interpret what the evidence means, state the tested-scope assurance, identify residual runtime risk, and provide the next verification action.
+The deterministic analyzer already owns test facts, runtime impact, remediation actions, verification baselines, and release gating. Your role is to add concise professional interpretation and refine only the evidence-backed root cause for submitted groups.
 
 If no submitted root-cause groups are provided, group_insights must be exactly an empty JSON array. Do not create placeholder group objects.
 
-Do not generate patches, code, automatic modifications, or hidden reasoning. Do not include markdown, code fences, headings, commentary, or fields outside the required JSON contract. Keep every field concise, technically precise, auditable, and suitable for a professional pre-deployment QA report."""
+Every top-level prose field must be one sentence and no more than 28 words. Every root_cause value must be one sentence and no more than 36 words. Do not repeat the complete deterministic test summary.
+
+Do not generate patches, code, automatic modifications, hidden reasoning, markdown, code fences, headings, commentary, or fields outside the required JSON contract."""
 
 
 def compact_text(value, limit):
@@ -46,12 +48,12 @@ def compact_evidence_item(item):
         "test_name": 220,
         "test_file": 320,
         "exception_type": 160,
-        "exception_message": 360,
-        "expected": 240,
-        "actual": 240,
+        "exception_message": 320,
+        "expected": 220,
+        "actual": 220,
         "application_file": 320,
         "failure_type": 160,
-        "help_message": 360,
+        "help_message": 320,
         "command": 320,
     }
     result = {}
@@ -90,7 +92,7 @@ def compact_run_summary(run_summary):
     source = run_summary if isinstance(run_summary, dict) else {}
     return {
         "framework": compact_text(source.get("framework"), 120),
-        "command": compact_text(source.get("command"), 400),
+        "command": compact_text(source.get("command"), 320),
         "total": source.get("total", 0),
         "passed": source.get("passed", 0),
         "failed": source.get("failed", 0),
@@ -108,72 +110,46 @@ def compact_run_summary(run_summary):
 def build_case_instruction(test_result, has_groups):
     if test_result == "PASS":
         return (
-            "Interpret the successful runtime outcome without repeating all test metrics. "
-            "Explain the assurance provided for the exercised runtime paths, state the residual "
-            "risk created by untested paths or unavailable coverage evidence, and provide one "
-            "evidence-retention or follow-up verification action. Do not write release advice, "
-            "deployment readiness, source findings, failures, defects, root causes, remediation, "
-            "or group insights. group_insights must be exactly []."
+            "Interpret the successful tested runtime outcome, define assurance only for exercised paths, "
+            "state residual runtime uncertainty, and give one evidence-retention or follow-up verification action. "
+            "Do not introduce defects, causes, remediation, or group insights."
         )
 
     if test_result == "FAIL":
         if has_groups:
             return (
-                "Interpret the confirmed failing runtime outcome using the supplied exception types, "
-                "exception messages, expected-versus-actual behavior, affected tests, and mapped locations "
-                "when available. Explain the evidence-supported failure pattern, tested-scope impact, "
-                "residual regression risk, and prioritized manual verification. Improve only supplied "
-                "root-cause groups. Do not describe the whole application or system as failed. Do not write "
-                "release advice or add new failures, groups, tests, files, lines, exceptions, or unsupported causes."
+                "Interpret the confirmed failing tested runtime outcome, state tested-scope assurance and residual regression risk, "
+                "give one prioritized verification action, and refine only the submitted evidence-backed root causes."
             )
 
         return (
-            "Interpret the confirmed failing runtime outcome using only the locked facts. Explain that detailed "
-            "root-cause grouping was not supplied and provide manual verification guidance. Describe only the "
-            "validated runtime workflow or tested scope as failed. Do not write release advice. "
-            "group_insights must be exactly []."
+            "Interpret the confirmed failing tested runtime outcome using only locked facts, state tested-scope assurance and residual risk, "
+            "and give one verification action. Do not invent root-cause groups."
         )
 
     if test_result == "NOT_RUN":
-        if has_groups:
-            return (
-                "Explain that no test outcome was established, identify the supplied execution or discovery barrier, "
-                "state why runtime confidence remains incomplete, and provide the exact action needed to obtain "
-                "executed test evidence. Do not write release advice."
-            )
-
         return (
-            "Explain that no test outcome was established and runtime confidence remains incomplete. Provide the "
-            "exact action needed to obtain executed test evidence. Do not describe the application as passed or "
-            "failed. Do not write release advice. group_insights must be exactly []."
+            "Explain that no executed test outcome was established, define the resulting assurance gap and residual runtime risk, "
+            "and state the exact action needed to obtain executed evidence."
         )
 
     if test_result == "INCONCLUSIVE":
-        if has_groups:
-            return (
-                "Explain why the runtime outcome is inconclusive, state the effect on runtime assurance, and "
-                "provide the required rerun or evidence-collection action. Do not invent a passing or failing "
-                "result. Do not write release advice."
-            )
-
         return (
-            "Explain why the runtime outcome is inconclusive, state the effect on runtime assurance, and provide "
-            "the required rerun or evidence-collection action. Do not invent a passing or failing result. Do not "
-            "write release advice. group_insights must be exactly []."
+            "Explain why the supplied runtime evidence is inconclusive, define the resulting assurance gap and residual risk, "
+            "and state the required rerun or evidence-collection action."
         )
 
     return (
-        "Produce a scope-limited runtime QA interpretation grounded only in supplied evidence. Do not write release "
-        "advice. If no root-cause groups are submitted, group_insights must be exactly []."
+        "Produce a concise tested-scope runtime QA interpretation grounded only in supplied evidence and do not write release advice."
     )
 
 
 def build_required_output_contract(test_result, has_groups):
     contract = {
-        "outcome_interpretation": "One concise sentence explaining what the validated runtime outcome means",
-        "scope_assurance": "One concise sentence defining assurance only for the tested runtime scope",
-        "residual_runtime_risk": "One concise sentence describing runtime risk not eliminated by the supplied evidence",
-        "next_verification": "One concise sentence giving the next manual verification or evidence-retention action",
+        "outcome_interpretation": "One sentence, maximum 28 words",
+        "scope_assurance": "One sentence, maximum 28 words",
+        "residual_runtime_risk": "One sentence, maximum 28 words",
+        "next_verification": "One sentence, maximum 28 words",
     }
 
     if test_result == "PASS" or not has_groups:
@@ -182,10 +158,8 @@ def build_required_output_contract(test_result, has_groups):
 
     contract["group_insights"] = [
         {
-            "group_id": "An existing submitted group_id only",
-            "root_cause": "One concise evidence-grounded root-cause sentence using supplied failure evidence",
-            "runtime_impact": "One concise tested-scope impact sentence",
-            "required_action": "One concise manual remediation and verification sentence",
+            "group_id": "Existing submitted group_id only",
+            "root_cause": "One evidence-grounded sentence, maximum 36 words",
         }
     ]
     return contract
@@ -193,15 +167,11 @@ def build_required_output_contract(test_result, has_groups):
 
 def build_group_instruction(test_result, has_groups):
     if test_result == "PASS" or not has_groups:
-        return (
-            "Return group_insights exactly as an empty array: []. "
-            "Do not include any object inside group_insights."
-        )
+        return "Return group_insights exactly as []."
 
     return (
-        "Return group_insights only for submitted root-cause groups. "
-        "Use existing submitted group_id values only. "
-        "Do not add new group IDs or placeholder group objects."
+        "Return one group_insights object for each submitted group, in the same order, using only existing group_id values. "
+        "Only refine root_cause; deterministic runtime impact and required actions are retained by the system."
     )
 
 
@@ -230,19 +200,11 @@ def build_analysis_messages(base_analysis):
                     "affected_tests": compact_list(
                         group.get("affected_tests", []),
                         item_limit=220,
-                        max_items=20,
+                        max_items=12,
                     ),
                     "evidence": evidence,
                     "validated_root_cause": compact_text(
                         group.get("root_cause"),
-                        900,
-                    ),
-                    "validated_runtime_impact": compact_text(
-                        group.get("runtime_impact"),
-                        700,
-                    ),
-                    "validated_required_action": compact_text(
-                        group.get("required_action"),
                         700,
                     ),
                 }
@@ -262,13 +224,13 @@ def build_analysis_messages(base_analysis):
             "run_summary": compact_run_summary(base_analysis.get("run_summary", {})),
             "warnings": compact_list(
                 base_analysis.get("warnings", []),
-                item_limit=280,
-                max_items=8,
+                item_limit=240,
+                max_items=6,
             ),
             "limitations": compact_list(
                 base_analysis.get("limitations", []),
-                item_limit=320,
-                max_items=6,
+                item_limit=260,
+                max_items=4,
             ),
         },
         "submitted_root_cause_groups": groups,
@@ -285,11 +247,9 @@ def build_analysis_messages(base_analysis):
         {
             "role": "user",
             "content": (
-                "Apply the case instruction and return valid JSON matching required_output exactly. "
-                "Each assessment field must add professional interpretation rather than repeat the raw metrics. "
-                "Use supplied exception messages and expected-versus-actual evidence when they materially improve "
-                "the precision of a failure explanation. Do not output release_advice or any release/deployment "
-                "approval field. "
+                "Return the required JSON object only. Keep every prose value within the stated word limit. "
+                "Use supplied exception and expected-versus-actual evidence only when it materially improves precision. "
+                "Do not output release advice, deterministic runtime impact, deterministic required actions, or extra fields. "
                 f"{build_group_instruction(test_result, has_groups)}\n\n"
                 + json.dumps(
                     payload,
