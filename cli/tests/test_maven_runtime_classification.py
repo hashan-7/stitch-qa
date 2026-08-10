@@ -6,7 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from stitch_cli.executor import classify_execution_failure
 from stitch_cli.runtime_evidence import collect_runtime_evidence
-from stitch_cli.reporter import build_qa_decision, build_scope_summary
+from stitch_cli.reporter import (
+    build_qa_decision,
+    build_report_limitations,
+    build_scope_summary,
+)
 
 
 PLUGIN_RESOLUTION_OUTPUT = """
@@ -174,4 +178,46 @@ def test_maven_pretest_blocker_produces_qa_incomplete_decision(tmp_path):
     assert not any(
         "confirmed a failing test result" in reason
         for reason in decision["reasons"]
+    )
+
+
+def test_maven_pretest_blocker_report_limitations_are_generated_without_name_error(tmp_path):
+    failure = classify_execution_failure(
+        "",
+        PLUGIN_RESOLUTION_OUTPUT,
+        ["mvn", "test"],
+    )
+    evidence = collect_runtime_evidence(
+        project_root=tmp_path,
+        command="mvn test",
+        command_profile="MAVEN_SYSTEM",
+        success=False,
+        exit_code=1,
+        stdout=PLUGIN_RESOLUTION_OUTPUT,
+        stderr="",
+        duration_seconds=2.0,
+        report_files=[],
+        failure_type=failure["failure_type"],
+        help_message=failure["help_message"],
+        executed=True,
+        skipped=False,
+    )
+    execution_result = {
+        "executed": True,
+        "skipped": False,
+        "runtime_evidence": evidence,
+    }
+    limitations = build_report_limitations(
+        {"has_tests": True},
+        {"status": "COMPLETED", "limitations": [], "llm_error": None},
+        execution_result,
+        {"workflow_status": {}},
+        {"limitations": [], "llm_error": None},
+        {"llm_error": None},
+        {"llm_error": None},
+    )
+
+    assert (
+        "The build or test workflow stopped before an executed automated-test result was established."
+        in limitations
     )

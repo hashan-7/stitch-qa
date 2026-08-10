@@ -1859,6 +1859,11 @@ def build_report_limitations(
         "workflow_status",
         {},
     )
+    runtime_evidence = execution_result.get("runtime_evidence") or {}
+    runtime_test_result = normalize_status(
+        runtime_evidence.get("test_result"),
+        "INCONCLUSIVE",
+    )
 
     if source_status == "UNAVAILABLE":
         limitations.append(
