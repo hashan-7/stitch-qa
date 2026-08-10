@@ -165,6 +165,12 @@ def build_execution_status(
             "status"
         ]
 
+    runtime_evidence = execution_result.get("runtime_evidence") or {}
+    runtime_test_result = normalize_status(
+        runtime_evidence.get("test_result"),
+        "INCONCLUSIVE",
+    )
+
     if execution_result.get(
         "skipped"
     ):
@@ -1145,6 +1151,11 @@ def build_qa_decision(
         "COMMAND_TIMEOUT",
         "EXECUTION_OS_ERROR",
         "EXECUTION_ERROR",
+        "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+        "MAVEN_DEPENDENCY_RESOLUTION_FAILURE",
+        "MAVEN_TEST_COMPILATION_FAILURE",
+        "MAVEN_COMPILATION_FAILURE",
+        "MAVEN_TEST_EXECUTION_BLOCKED",
     }
 
     execution_incomplete = (
@@ -1765,6 +1776,12 @@ def build_scope_summary(
         {},
     )
 
+    runtime_evidence = execution_result.get("runtime_evidence") or {}
+    runtime_test_result = normalize_status(
+        runtime_evidence.get("test_result"),
+        "INCONCLUSIVE",
+    )
+
     return {
         "source_review_supported": bool(
             source_discovery.get(
@@ -1811,10 +1828,9 @@ def build_scope_summary(
             ),
             "NOT_RUN",
         ),
-        "test_execution_performed": bool(
-            execution_result.get(
-                "executed"
-            )
+        "test_execution_performed": (
+            bool(execution_result.get("executed"))
+            and runtime_test_result != "NOT_RUN"
         ),
         "evidence_completeness": qa_decision.get(
             "completeness"
@@ -1873,6 +1889,10 @@ def build_report_limitations(
     ):
         limitations.append(
             "Automated test execution was not performed."
+        )
+    elif runtime_test_result == "NOT_RUN":
+        limitations.append(
+            "The build or test workflow stopped before an executed automated-test result was established."
         )
 
     if (
@@ -2675,7 +2695,7 @@ def build_agent_details_markdown(
         f"- Agent ID: {safe_value(log_agent_json.get('agent_id'), 'runtime-quality-analyst')}\n"
         f"- Version: {safe_value(log_agent_json.get('agent_version'), '2.0')}\n"
         f"- Mode: {safe_value(log_agent_json.get('mode'), 'Not available')}\n"
-        f"- Model: {safe_value(log_agent_json.get('model'), 'Not used')}\n\n"
+        f"- Model: {safe_value(log_agent_json.get('model'), 'Deterministic fallback')}\n\n"
         "### Runtime Assessment\n\n"
         f"{run_table}\n\n"
         "### Summary\n\n"

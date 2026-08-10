@@ -29,6 +29,18 @@ EXECUTION_FAILURES = {
     "EXECUTION_ERROR",
 }
 
+MAVEN_TEST_BLOCKERS = {
+    "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+    "MAVEN_DEPENDENCY_RESOLUTION_FAILURE",
+    "MAVEN_TEST_COMPILATION_FAILURE",
+    "MAVEN_COMPILATION_FAILURE",
+    "MAVEN_TEST_EXECUTION_BLOCKED",
+}
+
+PRECISE_MAVEN_TEST_BLOCKERS = MAVEN_TEST_BLOCKERS - {
+    "MAVEN_TEST_EXECUTION_BLOCKED",
+}
+
 
 def unique_strings(items):
     result = []
@@ -484,6 +496,31 @@ def build_environment_group(evidence, execution_result):
             "Runtime assurance remains incomplete for the intended tested scope.",
             "Resolve the execution-layer error and rerun Stitch QA.",
         ),
+        "MAVEN_PLUGIN_RESOLUTION_FAILURE": (
+            "Maven could not resolve a required build plugin before unit-test execution.",
+            "The Maven process exited before Surefire produced an executed test result, so runtime test assurance is incomplete.",
+            "Verify the plugin coordinates and version, confirm repository access, then rerun Stitch QA.",
+        ),
+        "MAVEN_DEPENDENCY_RESOLUTION_FAILURE": (
+            "Maven could not resolve required project or test dependencies before unit-test execution completed.",
+            "The Maven workflow did not establish a conclusive executed test result.",
+            "Verify dependency coordinates and repositories, restore dependency resolution, then rerun Stitch QA.",
+        ),
+        "MAVEN_TEST_COMPILATION_FAILURE": (
+            "Maven test-source compilation failed before the test suite could execute.",
+            "No conclusive runtime test result was established because the test sources did not compile.",
+            "Resolve the reported test compilation errors, then rerun Stitch QA.",
+        ),
+        "MAVEN_COMPILATION_FAILURE": (
+            "Maven application compilation failed before a conclusive unit-test result was produced.",
+            "The test phase could not establish runtime test assurance for the intended scope.",
+            "Resolve the reported compilation errors, then rerun Stitch QA.",
+        ),
+        "MAVEN_TEST_EXECUTION_BLOCKED": (
+            "Maven exited before Surefire produced an executed test result.",
+            "Runtime test assurance remains incomplete because no conclusive unit-test result was established.",
+            "Resolve the reported build or test-phase blocker, then rerun Stitch QA.",
+        ),
     }
     root_cause, impact, action = mapping.get(
         failure_type,
@@ -501,6 +538,18 @@ def build_environment_group(evidence, execution_result):
     elif failure_type in DISCOVERY_FAILURES:
         category = "TEST_DISCOVERY"
         failure_origin = "TEST_DISCOVERY"
+    elif failure_type in {
+        "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+        "MAVEN_DEPENDENCY_RESOLUTION_FAILURE",
+    }:
+        category = "BUILD_CONFIGURATION"
+        failure_origin = "EXECUTION"
+    elif failure_type in {
+        "MAVEN_TEST_COMPILATION_FAILURE",
+        "MAVEN_COMPILATION_FAILURE",
+    }:
+        category = "BUILD_COMPILATION"
+        failure_origin = "EXECUTION"
     else:
         category = "EXECUTION"
         failure_origin = "EXECUTION"
@@ -537,7 +586,11 @@ def determine_release_gate(evidence, execution_result):
         evidence.get("test_result") or "INCONCLUSIVE"
     ).upper()
 
-    if failure_type in ENVIRONMENT_FAILURES or failure_type in DISCOVERY_FAILURES:
+    if (
+        failure_type in ENVIRONMENT_FAILURES
+        or failure_type in DISCOVERY_FAILURES
+        or failure_type in MAVEN_TEST_BLOCKERS
+    ):
         return "REVIEW_REQUIRED"
 
     if execution_status in {
@@ -560,6 +613,14 @@ def determine_release_gate(evidence, execution_result):
 
 
 def determine_confidence(evidence, groups):
+    failure_type = evidence.get("failure_type")
+
+    if failure_type in PRECISE_MAVEN_TEST_BLOCKERS:
+        return "HIGH"
+
+    if failure_type == "MAVEN_TEST_EXECUTION_BLOCKED":
+        return "MEDIUM"
+
     evidence_quality = str(
         evidence.get("evidence_quality") or "NONE"
     ).upper()
@@ -622,7 +683,11 @@ def determine_failure_origin(evidence, execution_result, groups):
     if failure_type in DISCOVERY_FAILURES:
         return "TEST_DISCOVERY"
 
-    if failure_type in TIMEOUT_FAILURES or failure_type in EXECUTION_FAILURES:
+    if (
+        failure_type in TIMEOUT_FAILURES
+        or failure_type in EXECUTION_FAILURES
+        or failure_type in MAVEN_TEST_BLOCKERS
+    ):
         return "EXECUTION"
 
     for origin in (
@@ -693,9 +758,14 @@ def build_summary(evidence, release_gate, groups, scan_result):
         )
 
     if test_result == "NOT_RUN":
+        reason = (
+            short_text(groups[0].get("root_cause"), 180).rstrip(".")
+            if groups
+            else "no executed test result was established"
+        )
         return (
-            "The validated runtime test workflow did not establish an executed test result. "
-            f"The runtime gate is {release_gate} because runtime evidence for the intended tested scope remains incomplete."
+            f"{framework}: tests not run because {reason}. "
+            f"Runtime gate {release_gate} until the blocker is resolved."
         )
 
     command = evidence.get("command") or "the validated command"

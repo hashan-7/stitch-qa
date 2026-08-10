@@ -277,3 +277,63 @@ def test_model_service_cooldown_bypasses_repeated_timeout_work():
 
     assert service.last_generation["bypassed"] is True
     assert service.last_generation["bypass_reason"] == "cooldown"
+
+
+def build_maven_plugin_resolution_request():
+    return LogAnalysisRequest.model_validate(
+        {
+            "project_type": "Java Maven Project",
+            "command": "mvn test",
+            "success": False,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Plugin org.apache.maven.plugins:maven-surefire-plugin:3.6.0 could not be resolved",
+            "failure_type": "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+            "help_message": (
+                "Maven could not resolve a required build plugin before unit-test execution. "
+                "Verify the plugin coordinates and version, confirm repository access, and rerun Stitch QA."
+            ),
+            "runtime_evidence": {
+                "schema_version": "1.0",
+                "framework": "maven-surefire",
+                "command": "mvn test",
+                "execution_status": "COMPLETED",
+                "test_result": "NOT_RUN",
+                "exit_code": 1,
+                "duration_seconds": 6.5,
+                "test_summary": {
+                    "total": 0,
+                    "passed": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "duration_seconds": 6.5,
+                },
+                "failures": [],
+                "failure_records_total": 0,
+                "failure_records_submitted": 0,
+                "evidence_truncated": False,
+                "warnings": [],
+                "report_files": [],
+                "report_source": "NONE",
+                "evidence_quality": "NONE",
+                "collection_errors": [],
+                "failure_type": "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+            },
+        }
+    )
+
+
+def test_maven_plugin_resolution_failure_is_not_reported_as_test_failure():
+    result = build_base_analysis(build_maven_plugin_resolution_request())
+
+    assert result["execution_status"] == "COMPLETED"
+    assert result["test_result"] == "NOT_RUN"
+    assert result["release_gate"] == "REVIEW_REQUIRED"
+    assert result["runtime_risk_level"] == "UNKNOWN"
+    assert result["failure_origin"] == "EXECUTION"
+    assert result["diagnosis_confidence"] == "HIGH"
+    assert result["evidence_quality"] == "NONE"
+    assert result["root_cause_groups"][0]["category"] == "BUILD_CONFIGURATION"
+    assert "resolve a required build plugin" in result["root_cause_groups"][0]["root_cause"]
+    assert should_use_llm(result) is False

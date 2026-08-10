@@ -7,7 +7,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from stitch_cli.runtime_evidence import build_minimal_runtime_evidence, collect_runtime_evidence
+from stitch_cli.runtime_evidence import (
+    build_minimal_runtime_evidence,
+    classify_maven_test_blocker,
+    collect_runtime_evidence,
+)
 from stitch_cli.test_report_parser import discover_maven_report_files
 
 EXECUTION_POLICY = "BUILT_IN_ONLY"
@@ -99,6 +103,11 @@ def classify_execution_failure(stderr_text, stdout_text=None, command=None):
                 "(mvnw, mvnw.cmd, .mvn/wrapper) to this project."
             ),
         }
+
+    if "mvn" in command_lower:
+        blocker = classify_maven_test_blocker(stdout_text, stderr_text, fallback=False)
+        if blocker.get("failure_type"):
+            return blocker
 
     if (
         "python" in command_lower
@@ -231,6 +240,12 @@ def build_result(
             help_message=failure_info.get("help_message"),
             duration_seconds=duration_seconds,
         )
+    elif not failure_info.get("failure_type") and runtime_evidence.get("failure_type"):
+        failure_info = {
+            "failure_type": runtime_evidence.get("failure_type"),
+            "help_message": runtime_evidence.get("help_message"),
+        }
+        enhanced_stderr = build_stderr_with_help(stderr, failure_info)
 
     return {
         "status": status,

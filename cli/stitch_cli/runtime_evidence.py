@@ -14,6 +14,14 @@ ENVIRONMENT_FAILURES = {
     "COMMAND_PROFILE_NOT_ALLOWED",
 }
 
+MAVEN_TEST_BLOCKERS = {
+    "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+    "MAVEN_DEPENDENCY_RESOLUTION_FAILURE",
+    "MAVEN_TEST_COMPILATION_FAILURE",
+    "MAVEN_COMPILATION_FAILURE",
+    "MAVEN_TEST_EXECUTION_BLOCKED",
+}
+
 
 def unique_strings(items):
     result = []
@@ -34,6 +42,75 @@ def framework_from_profile(command_profile):
     if command_profile in {"MAVEN_SYSTEM", "MAVEN_WRAPPER"}:
         return "maven-surefire"
     return "unknown"
+
+
+def classify_maven_test_blocker(stdout, stderr, fallback=False):
+    logs = f"{stdout or ''}\n{stderr or ''}".lower()
+
+    if (
+        "pluginresolutionexception" in logs
+        or "pluginresolutionexception" in logs.replace(" ", "")
+        or (
+            "plugin org.apache.maven.plugins:" in logs
+            and "could not be resolved" in logs
+        )
+        or "could not find artifact org.apache.maven.plugins:" in logs
+    ):
+        return {
+            "failure_type": "MAVEN_PLUGIN_RESOLUTION_FAILURE",
+            "help_message": (
+                "Maven could not resolve a required build plugin before unit-test execution. "
+                "Verify the plugin coordinates and version, confirm repository access, and rerun Stitch QA."
+            ),
+        }
+
+    if (
+        "dependencyresolutionexception" in logs
+        or "could not resolve dependencies for project" in logs
+        or "failed to collect dependencies at" in logs
+    ):
+        return {
+            "failure_type": "MAVEN_DEPENDENCY_RESOLUTION_FAILURE",
+            "help_message": (
+                "Maven could not resolve required project or test dependencies before a conclusive test result was produced. "
+                "Verify dependency coordinates and repositories, then rerun Stitch QA."
+            ),
+        }
+
+    if (
+        ("testcompile" in logs or "test compilation" in logs)
+        and ("compilation failure" in logs or "compilation error" in logs or "compilation errors" in logs)
+    ):
+        return {
+            "failure_type": "MAVEN_TEST_COMPILATION_FAILURE",
+            "help_message": (
+                "Maven test-source compilation failed before the test suite could execute. "
+                "Resolve the reported test compilation errors and rerun Stitch QA."
+            ),
+        }
+
+    if "compilation failure" in logs or "compilation error" in logs or "compilation errors" in logs:
+        return {
+            "failure_type": "MAVEN_COMPILATION_FAILURE",
+            "help_message": (
+                "Maven compilation failed before a conclusive unit-test result was produced. "
+                "Resolve the reported compilation errors and rerun Stitch QA."
+            ),
+        }
+
+    if fallback:
+        return {
+            "failure_type": "MAVEN_TEST_EXECUTION_BLOCKED",
+            "help_message": (
+                "Maven exited before Surefire produced an executed test result. "
+                "Resolve the reported build or test-phase blocker and rerun Stitch QA."
+            ),
+        }
+
+    return {
+        "failure_type": None,
+        "help_message": None,
+    }
 
 
 def extract_console_test_summary(stdout, stderr):
@@ -153,6 +230,8 @@ def determine_test_result(summary, success, failure_type, execution_status):
         return "NOT_RUN"
     if failure_type == "PYTHON_TESTS_NOT_FOUND":
         return "NOT_RUN"
+    if failure_type in MAVEN_TEST_BLOCKERS and not summary["total"]:
+        return "NOT_RUN"
     if summary["failed"] or summary["errors"]:
         return "FAIL"
     if summary["total"] and success:
@@ -239,6 +318,18 @@ def collect_runtime_evidence(
         return evidence
 
     summary = extract_console_test_summary(stdout, stderr)
+
+    if (
+        command_profile in {"MAVEN_SYSTEM", "MAVEN_WRAPPER"}
+        and not success
+        and not summary["total"]
+        and failure_type not in ENVIRONMENT_FAILURES
+        and failure_type != "COMMAND_TIMEOUT"
+    ):
+        blocker = classify_maven_test_blocker(stdout, stderr, fallback=True)
+        failure_type = blocker["failure_type"]
+        help_message = blocker["help_message"]
+
     execution_status = determine_execution_status(executed, skipped, failure_type, exit_code)
     failures = extract_console_failures(stdout, stderr)
     return {
