@@ -100,6 +100,14 @@ class ModelService:
             10.0,
             float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "60")),
         )
+        self.failure_cooldown_seconds = max(
+            0.0,
+            float(os.getenv("MODEL_FAILURE_COOLDOWN_SECONDS", "300")),
+        )
+        self.prompt_cache_mb = max(
+            0,
+            int(os.getenv("MODEL_PROMPT_CACHE_MB", "512")),
+        )
         self.context_tokens = max(
             1024,
             int(os.getenv("MODEL_CONTEXT_TOKENS", "4096")),
@@ -154,6 +162,8 @@ class ModelService:
         self.load_error = None
         self.load_seconds = None
         self.last_generation = None
+        self.degraded_until = 0.0
+        self.degraded_reason = None
         self.load_lock = threading.Lock()
         self.generation_lock = threading.Lock()
 
@@ -175,7 +185,7 @@ class ModelService:
 
     def _load_model(self):
         try:
-            from llama_cpp import Llama
+            from llama_cpp import Llama, LlamaRAMCache
         except ImportError as error:
             raise RuntimeError(
                 "llama-cpp-python is required for the configured GGUF model backend."
@@ -194,6 +204,16 @@ class ModelService:
             use_mlock=False,
             verbose=False,
         )
+
+        if self.prompt_cache_mb > 0:
+            model.set_cache(
+                LlamaRAMCache(
+                    capacity_bytes=self.prompt_cache_mb
+                    * 1024
+                    * 1024
+                )
+            )
+
         return model_path, model
 
     def load(self):
@@ -231,6 +251,23 @@ class ModelService:
                 )
                 gc.collect()
                 raise RuntimeError(self.load_error) from error
+
+    def _cooldown_remaining(self):
+        return max(
+            0.0,
+            self.degraded_until - time.monotonic(),
+        )
+
+    def _mark_degraded(self, reason):
+        self.degraded_reason = str(reason)
+        self.degraded_until = (
+            time.monotonic()
+            + self.failure_cooldown_seconds
+        )
+
+    def _clear_degraded(self):
+        self.degraded_until = 0.0
+        self.degraded_reason = None
 
     def _prepare_messages(self, messages):
         prepared = [
@@ -322,6 +359,24 @@ class ModelService:
 
     def generate(self, messages):
         self.last_generation = None
+        cooldown_remaining = self._cooldown_remaining()
+
+        if cooldown_remaining > 0:
+            self.last_generation = {
+                "backend": "llama.cpp",
+                "quantization": self.quantization,
+                "bypassed": True,
+                "bypass_reason": "cooldown",
+                "cooldown_remaining_seconds": round(
+                    cooldown_remaining,
+                    3,
+                ),
+            }
+            raise RuntimeError(
+                "LLM inference is temporarily bypassed after a recent backend timeout "
+                f"(cooldown_remaining_seconds={cooldown_remaining:.3f})."
+            )
+
         model = self.load()
 
         with self.generation_lock:
@@ -341,6 +396,8 @@ class ModelService:
             finish_reason = None
             timed_out = False
             stream = None
+            first_chunk_seconds = None
+            first_content_seconds = None
 
             try:
                 stream = self._create_stream(
@@ -351,26 +408,32 @@ class ModelService:
                 for chunk in stream:
                     elapsed = time.monotonic() - started
 
-                    if elapsed >= self.max_generation_seconds:
-                        timed_out = True
-                        break
+                    if first_chunk_seconds is None:
+                        first_chunk_seconds = elapsed
 
                     choices = chunk.get("choices") or []
 
-                    if not choices:
-                        continue
+                    if choices:
+                        choice = choices[0]
+                        delta = choice.get("delta") or {}
+                        content = delta.get("content")
 
-                    choice = choices[0]
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
+                        if content:
+                            if first_content_seconds is None:
+                                first_content_seconds = elapsed
+                            parts.append(str(content))
 
-                    if content:
-                        parts.append(str(content))
+                        if choice.get("finish_reason"):
+                            finish_reason = str(
+                                choice.get("finish_reason")
+                            )
 
-                    if choice.get("finish_reason"):
-                        finish_reason = str(
-                            choice.get("finish_reason")
-                        )
+                    if (
+                        elapsed >= self.max_generation_seconds
+                        and not finish_reason
+                    ):
+                        timed_out = True
+                        break
             finally:
                 if timed_out and stream is not None:
                     close = getattr(stream, "close", None)
@@ -395,6 +458,16 @@ class ModelService:
                 "input_tokens_approx": input_tokens,
                 "completion_tokens": completion_tokens,
                 "elapsed_seconds": round(elapsed, 3),
+                "first_chunk_seconds": (
+                    round(first_chunk_seconds, 3)
+                    if first_chunk_seconds is not None
+                    else None
+                ),
+                "first_content_seconds": (
+                    round(first_content_seconds, 3)
+                    if first_content_seconds is not None
+                    else None
+                ),
                 "tokens_per_second": tokens_per_second,
                 "finish_reason": finish_reason,
                 "timed_out": timed_out,
@@ -403,6 +476,7 @@ class ModelService:
             }
 
             if timed_out:
+                self._mark_degraded("generation_timeout")
                 raise RuntimeError(
                     "The configured LLM exceeded the generation time limit "
                     f"(backend=llama.cpp, generated_tokens={completion_tokens}, elapsed_seconds={elapsed:.3f}, tokens_per_second={tokens_per_second:.3f})."
@@ -425,6 +499,7 @@ class ModelService:
                     "The configured LLM reached the output token limit before completing the requested response."
                 )
 
+            self._clear_degraded()
             return text
 
     def status(self):
@@ -457,6 +532,13 @@ class ModelService:
             "max_input_tokens": self.max_input_tokens,
             "max_new_tokens": self.max_new_tokens,
             "max_generation_seconds": self.max_generation_seconds,
+            "failure_cooldown_seconds": self.failure_cooldown_seconds,
+            "cooldown_remaining_seconds": round(
+                self._cooldown_remaining(),
+                3,
+            ),
+            "degraded_reason": self.degraded_reason,
+            "prompt_cache_mb": self.prompt_cache_mb,
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k,

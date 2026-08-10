@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from model_service import MODEL_RESPONSE_SCHEMA, ModelService
-from runtime_analyzer import build_base_analysis
+from runtime_analyzer import build_base_analysis, should_use_llm
 from schemas import LogAnalysisRequest
 from validators import merge_model_output, validate_model_output
 
@@ -246,3 +246,34 @@ def test_gguf_model_service_rejects_output_length_stop():
             ]
         )
 
+
+
+def test_adaptive_llm_skips_high_confidence_structured_single_group():
+    result = build_base_analysis(build_request())
+    assert result["diagnosis_confidence"] == "HIGH"
+    assert result["evidence_quality"] == "STRUCTURED"
+    assert len(result["root_cause_groups"]) == 1
+    assert should_use_llm(result) is False
+
+
+def test_adaptive_llm_runs_for_ambiguous_diagnosis():
+    result = build_base_analysis(build_request())
+    result["diagnosis_confidence"] = "MEDIUM"
+    assert should_use_llm(result) is True
+
+
+def test_model_service_cooldown_bypasses_repeated_timeout_work():
+    service = ModelService()
+    service.failure_cooldown_seconds = 300.0
+    service._mark_degraded("generation_timeout")
+
+    with pytest.raises(RuntimeError, match="temporarily bypassed"):
+        service.generate(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "analyze"},
+            ]
+        )
+
+    assert service.last_generation["bypassed"] is True
+    assert service.last_generation["bypass_reason"] == "cooldown"

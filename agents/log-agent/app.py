@@ -17,6 +17,7 @@ from validators import merge_model_output, validate_model_output
 
 LLM_POLICIES = {
     "ALWAYS",
+    "ADAPTIVE",
     "FAILURES_ONLY",
     "DISABLED",
 }
@@ -28,8 +29,8 @@ app = FastAPI(
 
 
 def get_llm_policy():
-    value = os.getenv("LLM_POLICY", "FAILURES_ONLY").strip().upper()
-    return value if value in LLM_POLICIES else "FAILURES_ONLY"
+    value = os.getenv("LLM_POLICY", "ADAPTIVE").strip().upper()
+    return value if value in LLM_POLICIES else "ADAPTIVE"
 
 
 def should_attempt_llm(result, policy):

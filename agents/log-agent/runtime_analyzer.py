@@ -1179,13 +1179,57 @@ def build_base_analysis(request: LogAnalysisRequest):
 
 
 def should_use_llm(base_analysis):
-    return (
-        bool(
-            base_analysis.get(
-                "root_cause_groups"
-            )
-        )
-        and base_analysis.get("test_result")
-        != "PASS"
+    test_result = str(
+        base_analysis.get("test_result")
+        or "INCONCLUSIVE"
+    ).upper()
+    groups = list(
+        base_analysis.get("root_cause_groups")
+        or []
     )
+
+    if test_result in {
+        "PASS",
+        "NOT_RUN",
+        "INCONCLUSIVE",
+    }:
+        return False
+
+    if not groups:
+        return False
+
+    confidence = str(
+        base_analysis.get("diagnosis_confidence")
+        or "LOW"
+    ).upper()
+    failure_origin = str(
+        base_analysis.get("failure_origin")
+        or "NOT_ESTABLISHED"
+    ).upper()
+    evidence_quality = str(
+        base_analysis.get("evidence_quality")
+        or "NONE"
+    ).upper()
+
+    if len(groups) > 1:
+        return True
+
+    if failure_origin == "NOT_ESTABLISHED":
+        return True
+
+    if confidence != "HIGH":
+        return True
+
+    if evidence_quality != "STRUCTURED":
+        return True
+
+    complex_categories = {
+        "RUNTIME_EXCEPTION",
+    }
+    categories = {
+        str(group.get("category") or "").upper()
+        for group in groups
+    }
+
+    return bool(categories & complex_categories)
 
