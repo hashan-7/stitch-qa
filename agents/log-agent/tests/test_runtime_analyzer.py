@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from model_service import JsonObjectStoppingCriteria
 from runtime_analyzer import build_base_analysis
 from schemas import LogAnalysisRequest
 from validators import merge_model_output, validate_model_output
@@ -160,3 +161,29 @@ def test_model_merge_refines_root_cause_without_replacing_deterministic_action_o
     assert merged["root_cause_groups"][0]["root_cause"] == payload.group_insights[0].root_cause
     assert merged["root_cause_groups"][0]["runtime_impact"] == original_impact
     assert merged["root_cause_groups"][0]["required_action"] == original_action
+
+
+class JsonStopTokenizer:
+    def decode(self, token_ids, skip_special_tokens=True):
+        values = token_ids.tolist()
+        return "}" if values and values[-1] == 9 else '"value"'
+
+
+def test_json_stopping_criteria_returns_one_dimensional_batch_mask():
+    criterion = JsonObjectStoppingCriteria(
+        JsonStopTokenizer(),
+        prompt_length=2,
+    )
+    input_ids = __import__("torch").tensor(
+        [
+            [1, 2, 9],
+            [1, 2, 8],
+        ]
+    )
+    result = criterion(
+        input_ids,
+        scores=None,
+    )
+    assert result.shape == (2,)
+    assert result.dtype == __import__("torch").bool
+    assert result.tolist() == [True, False]

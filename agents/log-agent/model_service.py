@@ -71,7 +71,7 @@ class JsonObjectStoppingCriteria(StoppingCriteria):
                 skip_special_tokens=True,
             )
             results.append(
-                [is_complete_json_object(text)]
+                is_complete_json_object(text)
             )
 
         return torch.tensor(
