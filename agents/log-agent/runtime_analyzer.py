@@ -919,19 +919,19 @@ def build_summary(
     framework = (
         evidence.framework
         or request.project_type
+        or "runtime"
     )
 
     if evidence.test_result == "PASS":
         warning_text = (
-            " Supplied runtime warnings still require review."
+            " Runtime warnings still require review."
             if evidence.warnings
             else ""
         )
 
         return (
-            f"The validated {framework} runtime test workflow completed successfully within the exercised scope: "
-            f"{summary.total} tests were executed, {summary.passed} passed, with no confirmed test failures or execution errors. "
-            f"The runtime gate is {release_gate} for the tested runtime scope only."
+            f"{framework}: {summary.passed}/{summary.total} tests passed; "
+            f"runtime gate {release_gate} for the tested scope."
             f"{warning_text}"
         )
 
@@ -943,22 +943,19 @@ def build_summary(
         group_count = len(groups)
 
         return (
-            f"The validated {framework} runtime test workflow failed within the exercised scope: "
-            f"{failed_count} tests failed or errored and were organized into "
-            f"{group_count} evidence-backed root-cause group"
-            f"{'s' if group_count != 1 else ''}. "
-            f"The runtime gate is {release_gate} until the confirmed tested-path failures are resolved and verified."
+            f"{framework}: {failed_count}/{summary.total} tests failed or errored across "
+            f"{group_count} root-cause group"
+            f"{'s' if group_count != 1 else ''}; "
+            f"runtime gate {release_gate} until fixes are verified."
         )
 
     if evidence.test_result == "NOT_RUN":
         return (
-            "The validated runtime test workflow did not establish an executed test result. "
-            f"The runtime gate is {release_gate} because runtime evidence for the intended tested scope remains incomplete."
+            f"Runtime tests were not executed; runtime gate {release_gate} until the execution or discovery blocker is resolved."
         )
 
     return (
-        f"The validated runtime result for `{request.command}` is inconclusive within the intended tested scope. "
-        f"The runtime gate is {release_gate} until the execution barrier is resolved and conclusive runtime evidence is collected."
+        f"Runtime evidence for `{request.command}` is inconclusive; runtime gate {release_gate} until the workflow is rerun with conclusive evidence."
     )
 
 
@@ -1124,6 +1121,10 @@ def build_base_analysis(request: LogAnalysisRequest):
         "diagnosis_confidence": confidence,
         "final_status": final_status,
         "summary": summary,
+        "outcome_interpretation": None,
+        "scope_assurance": None,
+        "residual_runtime_risk": None,
+        "next_verification": None,
         "run_summary": {
             "framework": evidence.framework,
             "command": (
@@ -1172,6 +1173,7 @@ def build_base_analysis(request: LogAnalysisRequest):
             evidence
         ),
         "evidence_quality": evidence.evidence_quality,
+        "llm_metrics": None,
         "llm_error": None,
     }
 
@@ -1186,3 +1188,4 @@ def should_use_llm(base_analysis):
         and base_analysis.get("test_result")
         != "PASS"
     )
+

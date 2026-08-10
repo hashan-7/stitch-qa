@@ -93,10 +93,13 @@ def analyze_logs(request: LogAnalysisRequest):
         result = merge_model_output(result, model_payload)
         result["mode"] = "hybrid-validated"
         result["model"] = model_service.model_name or model_service.primary_model
+        result["llm_metrics"] = model_service.last_generation
         result["llm_error"] = None
     except Exception as error:
         result["mode"] = "rule-based-fallback"
         result["model"] = model_service.model_name or model_service.primary_model
+        result["llm_metrics"] = model_service.last_generation
         result["llm_error"] = repr(error)
 
     return LogAnalysisResponse.model_validate(result)
+

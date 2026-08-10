@@ -16,7 +16,7 @@ The deterministic analyzer already owns test facts, runtime impact, remediation 
 
 If no submitted root-cause groups are provided, group_insights must be exactly an empty JSON array. Do not create placeholder group objects.
 
-Every top-level prose field must be one sentence and no more than 28 words. Every root_cause value must be one sentence and no more than 36 words. Do not repeat the complete deterministic test summary.
+Every top-level prose field must be one sentence and no more than 22 words. Every root_cause value must be one sentence and no more than 30 words. Do not repeat the complete deterministic test summary.
 
 Do not generate patches, code, automatic modifications, hidden reasoning, markdown, code fences, headings, commentary, or fields outside the required JSON contract."""
 
@@ -146,10 +146,10 @@ def build_case_instruction(test_result, has_groups):
 
 def build_required_output_contract(test_result, has_groups):
     contract = {
-        "outcome_interpretation": "One sentence, maximum 28 words",
-        "scope_assurance": "One sentence, maximum 28 words",
-        "residual_runtime_risk": "One sentence, maximum 28 words",
-        "next_verification": "One sentence, maximum 28 words",
+        "outcome_interpretation": "One sentence, maximum 22 words",
+        "scope_assurance": "One sentence, maximum 22 words",
+        "residual_runtime_risk": "One sentence, maximum 22 words",
+        "next_verification": "One sentence, maximum 22 words",
     }
 
     if test_result == "PASS" or not has_groups:
@@ -159,7 +159,7 @@ def build_required_output_contract(test_result, has_groups):
     contract["group_insights"] = [
         {
             "group_id": "Existing submitted group_id only",
-            "root_cause": "One evidence-grounded sentence, maximum 36 words",
+            "root_cause": "One evidence-grounded sentence, maximum 30 words",
         }
     ]
     return contract
@@ -259,3 +259,4 @@ def build_analysis_messages(base_analysis):
             ),
         },
     ]
+

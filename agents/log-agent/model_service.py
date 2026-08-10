@@ -1,311 +1,429 @@
 import gc
+import json
 import os
 import threading
 import time
 
-import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    StoppingCriteria,
-    StoppingCriteriaList,
-)
+
+MODEL_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "outcome_interpretation": {"type": "string"},
+        "scope_assurance": {"type": "string"},
+        "residual_runtime_risk": {"type": "string"},
+        "next_verification": {"type": "string"},
+        "group_insights": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "group_id": {"type": "string"},
+                    "root_cause": {"type": "string"},
+                },
+                "required": ["group_id", "root_cause"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": [
+        "outcome_interpretation",
+        "scope_assurance",
+        "residual_runtime_risk",
+        "next_verification",
+        "group_insights",
+    ],
+    "additionalProperties": False,
+}
 
 
-JSON_PREFILL = "{"
+def env_bool(name, default):
+    value = os.getenv(name)
+
+    if value is None:
+        return bool(default)
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
-def complete_json_end(text):
-    value = str(text or "")
-    start = value.find("{")
-
-    if start < 0:
-        return None
-
-    depth = 0
-    in_string = False
-    escaped = False
-
-    for index in range(start, len(value)):
-        character = value[index]
-
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
-
-        if character == '"':
-            in_string = True
-        elif character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-
-            if depth == 0:
-                return index + 1
-
-    return None
-
-
-def is_complete_json_object(text):
-    return complete_json_end(text) is not None
-
-
-class JsonObjectStoppingCriteria(StoppingCriteria):
-    def __init__(self, tokenizer, prompt_length, prefix=JSON_PREFILL):
-        self.tokenizer = tokenizer
-        self.prompt_length = int(prompt_length)
-        self.prefix = str(prefix)
-
-    def __call__(self, input_ids, scores, **kwargs):
-        results = []
-
-        for sequence in input_ids:
-            generated = sequence[self.prompt_length:]
-            text = self.prefix + self.tokenizer.decode(
-                generated,
-                skip_special_tokens=True,
-            )
-            results.append(
-                is_complete_json_object(text)
-            )
-
-        return torch.tensor(
-            results,
-            dtype=torch.bool,
-            device=input_ids.device,
-        )
+def safe_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 class ModelService:
     def __init__(self):
-        self.primary_model = os.getenv("HF_MODEL", "Qwen/Qwen3-1.7B")
-        self.enabled = os.getenv("LLM_ENABLED", "true").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        self.local_files_only = os.getenv(
+        self.model_repo = os.getenv(
+            "HF_MODEL_REPO",
+            "Qwen/Qwen3-1.7B-GGUF",
+        ).strip()
+        self.model_file = os.getenv(
+            "HF_MODEL_FILE",
+            "Qwen3-1.7B-Q5_K_M.gguf",
+        ).strip()
+        self.model_revision = os.getenv(
+            "HF_MODEL_REVISION",
+            "cd3d34a469f89b12676edce7d272750201959466",
+        ).strip()
+        self.quantization = os.getenv(
+            "MODEL_QUANTIZATION",
+            "Q5_K_M",
+        ).strip()
+        self.primary_model = os.getenv(
+            "HF_MODEL",
+            f"{self.model_repo}:{self.quantization}",
+        ).strip()
+        self.cache_dir = os.getenv(
+            "MODEL_CACHE_DIR",
+            "/opt/huggingface/hub",
+        ).strip()
+        self.enabled = env_bool("LLM_ENABLED", True)
+        self.local_files_only = env_bool(
             "HF_LOCAL_FILES_ONLY",
-            "false",
-        ).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+            False,
+        )
         self.max_input_tokens = max(
             512,
             int(os.getenv("MODEL_MAX_INPUT_TOKENS", "3072")),
         )
         self.max_new_tokens = max(
             96,
-            int(os.getenv("MODEL_MAX_NEW_TOKENS", "384")),
+            int(os.getenv("MODEL_MAX_NEW_TOKENS", "256")),
         )
         self.max_generation_seconds = max(
             10.0,
-            float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "90")),
+            float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "60")),
         )
-        self.torch_threads = max(
+        self.context_tokens = max(
+            1024,
+            int(os.getenv("MODEL_CONTEXT_TOKENS", "4096")),
+        )
+        self.batch_tokens = max(
+            64,
+            min(
+                self.context_tokens,
+                int(os.getenv("MODEL_BATCH_TOKENS", "512")),
+            ),
+        )
+        self.threads = max(
             1,
-            int(os.getenv("TORCH_NUM_THREADS", "2")),
+            int(os.getenv("MODEL_THREADS", "2")),
         )
-        self.dtype_name = os.getenv("MODEL_DTYPE", "float32").strip().lower()
-        self.temperature = max(0.01, float(os.getenv("MODEL_TEMPERATURE", "0.7")))
-        self.top_p = min(1.0, max(0.01, float(os.getenv("MODEL_TOP_P", "0.8"))))
-        self.top_k = max(0, int(os.getenv("MODEL_TOP_K", "20")))
-        self.repetition_penalty = max(
+        self.threads_batch = max(
+            1,
+            int(os.getenv("MODEL_THREADS_BATCH", str(self.threads))),
+        )
+        self.temperature = max(
             0.01,
-            float(os.getenv("MODEL_REPETITION_PENALTY", "1.05")),
+            float(os.getenv("MODEL_TEMPERATURE", "0.7")),
+        )
+        self.top_p = min(
+            1.0,
+            max(0.01, float(os.getenv("MODEL_TOP_P", "0.8"))),
+        )
+        self.top_k = max(
+            0,
+            int(os.getenv("MODEL_TOP_K", "20")),
+        )
+        self.min_p = min(
+            1.0,
+            max(0.0, float(os.getenv("MODEL_MIN_P", "0"))),
+        )
+        self.presence_penalty = min(
+            2.0,
+            max(
+                0.0,
+                float(os.getenv("MODEL_PRESENCE_PENALTY", "1.5")),
+            ),
+        )
+        self.repeat_penalty = max(
+            0.01,
+            float(os.getenv("MODEL_REPEAT_PENALTY", "1.0")),
         )
         self.seed = int(os.getenv("MODEL_SEED", "17"))
-        self.tokenizer = None
+        self.use_mmap = env_bool("MODEL_USE_MMAP", True)
         self.model = None
+        self.model_path = None
         self.model_name = None
         self.load_error = None
+        self.load_seconds = None
         self.last_generation = None
         self.load_lock = threading.Lock()
         self.generation_lock = threading.Lock()
-        torch.set_num_threads(self.torch_threads)
-        try:
-            torch.set_num_interop_threads(1)
-        except RuntimeError:
-            pass
 
-    def _resolve_dtype(self):
-        mapping = {
-            "float32": torch.float32,
-            "fp32": torch.float32,
-            "float16": torch.float16,
-            "fp16": torch.float16,
-            "bfloat16": torch.bfloat16,
-            "bf16": torch.bfloat16,
-            "auto": "auto",
-        }
-        return mapping.get(self.dtype_name, torch.float32)
+    def _download_model(self):
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as error:
+            raise RuntimeError(
+                "huggingface_hub is required for the configured GGUF model backend."
+            ) from error
+
+        return hf_hub_download(
+            repo_id=self.model_repo,
+            filename=self.model_file,
+            revision=self.model_revision,
+            cache_dir=self.cache_dir,
+            local_files_only=self.local_files_only,
+        )
 
     def _load_model(self):
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.primary_model,
-            trust_remote_code=False,
-            local_files_only=self.local_files_only,
-            use_fast=True,
-        )
-        kwargs = {
-            "low_cpu_mem_usage": True,
-            "trust_remote_code": False,
-            "local_files_only": self.local_files_only,
-        }
-        dtype = self._resolve_dtype()
-
         try:
-            model = AutoModelForCausalLM.from_pretrained(
-                self.primary_model,
-                dtype=dtype,
-                **kwargs,
-            )
-        except TypeError:
-            model = AutoModelForCausalLM.from_pretrained(
-                self.primary_model,
-                torch_dtype=dtype,
-                **kwargs,
-            )
+            from llama_cpp import Llama
+        except ImportError as error:
+            raise RuntimeError(
+                "llama-cpp-python is required for the configured GGUF model backend."
+            ) from error
 
-        model.eval()
-
-        if tokenizer.pad_token_id is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        return tokenizer, model
+        model_path = self._download_model()
+        model = Llama(
+            model_path=model_path,
+            n_ctx=self.context_tokens,
+            n_batch=self.batch_tokens,
+            n_threads=self.threads,
+            n_threads_batch=self.threads_batch,
+            n_gpu_layers=0,
+            seed=self.seed,
+            use_mmap=self.use_mmap,
+            use_mlock=False,
+            verbose=False,
+        )
+        return model_path, model
 
     def load(self):
         if not self.enabled:
             raise RuntimeError("LLM inference is disabled.")
 
-        if self.tokenizer is not None and self.model is not None:
-            return self.tokenizer, self.model
+        if self.model is not None:
+            return self.model
 
         with self.load_lock:
-            if self.tokenizer is not None and self.model is not None:
-                return self.tokenizer, self.model
+            if self.model is not None:
+                return self.model
+
+            started = time.monotonic()
 
             try:
-                tokenizer, model = self._load_model()
-                self.tokenizer = tokenizer
+                model_path, model = self._load_model()
+                self.model_path = model_path
                 self.model = model
                 self.model_name = self.primary_model
                 self.load_error = None
-                return tokenizer, model
+                self.load_seconds = round(
+                    time.monotonic() - started,
+                    3,
+                )
+                return model
             except Exception as error:
-                self.tokenizer = None
                 self.model = None
+                self.model_path = None
                 self.model_name = None
                 self.load_error = repr(error)
+                self.load_seconds = round(
+                    time.monotonic() - started,
+                    3,
+                )
                 gc.collect()
                 raise RuntimeError(self.load_error) from error
 
-    def _build_inputs(self, messages):
-        prefilled_messages = [
-            *messages,
+    def _prepare_messages(self, messages):
+        prepared = [
             {
-                "role": "assistant",
-                "content": JSON_PREFILL,
-            },
+                "role": str(message.get("role") or "user"),
+                "content": str(message.get("content") or ""),
+            }
+            for message in messages
         ]
 
-        inputs = self.tokenizer.apply_chat_template(
-            prefilled_messages,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-            continue_final_message=True,
-            enable_thinking=False,
+        for message in prepared:
+            if message["role"] == "system":
+                message["content"] = (
+                    message["content"].rstrip()
+                    + "\n\n/no_think"
+                )
+                return prepared
+
+        return [
+            {
+                "role": "system",
+                "content": "/no_think",
+            },
+            *prepared,
+        ]
+
+    def _count_message_tokens(self, model, messages):
+        serialized = json.dumps(
+            messages,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        try:
+            tokens = model.tokenize(
+                serialized,
+                add_bos=False,
+                special=True,
+            )
+        except TypeError:
+            tokens = model.tokenize(
+                serialized,
+                add_bos=False,
+            )
+
+        return len(tokens)
+
+    def _count_text_tokens(self, model, text):
+        if not text:
+            return 0
+
+        value = str(text).encode("utf-8")
+
+        try:
+            tokens = model.tokenize(
+                value,
+                add_bos=False,
+                special=True,
+            )
+        except TypeError:
+            tokens = model.tokenize(
+                value,
+                add_bos=False,
+            )
+
+        return len(tokens)
+
+    def _response_format(self):
+        return {
+            "type": "json_object",
+            "schema": MODEL_RESPONSE_SCHEMA,
+        }
+
+    def _create_stream(self, model, messages):
+        return model.create_chat_completion(
+            messages=messages,
+            response_format=self._response_format(),
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            min_p=self.min_p,
+            presence_penalty=self.presence_penalty,
+            frequency_penalty=0.0,
+            repeat_penalty=self.repeat_penalty,
+            seed=self.seed,
+            stream=True,
         )
 
-        input_tokens = int(inputs["input_ids"].shape[-1])
-
-        if input_tokens > self.max_input_tokens:
-            raise RuntimeError(
-                f"Model input contains {input_tokens} tokens, exceeding the configured safe limit of {self.max_input_tokens}; deterministic fallback was selected instead of truncating locked evidence."
-            )
-
-        return inputs
-
     def generate(self, messages):
-        tokenizer, model = self.load()
+        self.last_generation = None
+        model = self.load()
 
         with self.generation_lock:
-            inputs = self._build_inputs(messages)
-            prompt_length = int(inputs["input_ids"].shape[-1])
-            stopping_criteria = StoppingCriteriaList(
-                [
-                    JsonObjectStoppingCriteria(
-                        tokenizer,
-                        prompt_length,
-                    )
-                ]
+            prepared_messages = self._prepare_messages(messages)
+            input_tokens = self._count_message_tokens(
+                model,
+                prepared_messages,
             )
-            torch.manual_seed(self.seed)
-            started = time.monotonic()
 
-            with torch.inference_mode():
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    max_time=self.max_generation_seconds,
-                    do_sample=True,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    top_k=self.top_k,
-                    repetition_penalty=self.repetition_penalty,
-                    stopping_criteria=stopping_criteria,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
+            if input_tokens > self.max_input_tokens:
+                raise RuntimeError(
+                    f"Model input contains approximately {input_tokens} tokens, exceeding the configured safe limit of {self.max_input_tokens}; deterministic fallback was selected instead of truncating locked evidence."
                 )
+
+            started = time.monotonic()
+            parts = []
+            finish_reason = None
+            timed_out = False
+            stream = None
+
+            try:
+                stream = self._create_stream(
+                    model,
+                    prepared_messages,
+                )
+
+                for chunk in stream:
+                    elapsed = time.monotonic() - started
+
+                    if elapsed >= self.max_generation_seconds:
+                        timed_out = True
+                        break
+
+                    choices = chunk.get("choices") or []
+
+                    if not choices:
+                        continue
+
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+
+                    if content:
+                        parts.append(str(content))
+
+                    if choice.get("finish_reason"):
+                        finish_reason = str(
+                            choice.get("finish_reason")
+                        )
+            finally:
+                if timed_out and stream is not None:
+                    close = getattr(stream, "close", None)
+
+                    if callable(close):
+                        close()
 
             elapsed = time.monotonic() - started
-            generated = output[0][prompt_length:]
-            generated_tokens = int(generated.shape[-1])
-            decoded = tokenizer.decode(
-                generated,
-                skip_special_tokens=True,
+            text = "".join(parts).strip()
+            completion_tokens = self._count_text_tokens(
+                model,
+                text,
             )
-            text = JSON_PREFILL + decoded
-            complete_end = complete_json_end(text)
-            completed_json = complete_end is not None
-            hit_token_limit = generated_tokens >= self.max_new_tokens
-            hit_time_limit = elapsed >= self.max_generation_seconds
-
+            tokens_per_second = (
+                round(completion_tokens / elapsed, 3)
+                if elapsed > 0 and completion_tokens
+                else 0.0
+            )
             self.last_generation = {
-                "generated_tokens": generated_tokens,
+                "backend": "llama.cpp",
+                "quantization": self.quantization,
+                "input_tokens_approx": input_tokens,
+                "completion_tokens": completion_tokens,
                 "elapsed_seconds": round(elapsed, 3),
-                "completed_json": completed_json,
-                "hit_token_limit": hit_token_limit,
-                "hit_time_limit": hit_time_limit,
+                "tokens_per_second": tokens_per_second,
+                "finish_reason": finish_reason,
+                "timed_out": timed_out,
+                "max_generation_seconds": self.max_generation_seconds,
+                "max_new_tokens": self.max_new_tokens,
             }
 
-            if not completed_json:
-                if hit_token_limit:
-                    reason = "max_new_tokens"
-                elif hit_time_limit:
-                    reason = "max_time"
-                else:
-                    reason = "model_stop"
-
+            if timed_out:
                 raise RuntimeError(
-                    "The configured LLM stopped before completing the required JSON object "
-                    f"(reason={reason}, generated_tokens={generated_tokens}, elapsed_seconds={elapsed:.3f})."
+                    "The configured LLM exceeded the generation time limit "
+                    f"(backend=llama.cpp, generated_tokens={completion_tokens}, elapsed_seconds={elapsed:.3f}, tokens_per_second={tokens_per_second:.3f})."
                 )
 
-            text = text[:complete_end].strip()
-
             if not text:
-                raise RuntimeError("The configured LLM returned an empty response.")
+                raise RuntimeError(
+                    "The configured LLM returned an empty response."
+                )
+
+            try:
+                json.loads(text)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    "The configured GGUF JSON-constrained generation returned invalid JSON."
+                ) from error
+
+            if finish_reason == "length":
+                raise RuntimeError(
+                    "The configured LLM reached the output token limit before completing the requested response."
+                )
 
             return text
 
@@ -323,19 +441,30 @@ class ModelService:
             "enabled": self.enabled,
             "loaded": self.model is not None,
             "state": state,
+            "backend": "llama.cpp",
             "configured_model": self.primary_model,
             "active_model": self.model_name,
+            "model_repo": self.model_repo,
+            "model_file": self.model_file,
+            "model_revision": self.model_revision,
+            "quantization": self.quantization,
             "load_error": self.load_error,
-            "torch_threads": self.torch_threads,
-            "dtype": self.dtype_name,
+            "load_seconds": self.load_seconds,
+            "context_tokens": self.context_tokens,
+            "batch_tokens": self.batch_tokens,
+            "threads": self.threads,
+            "threads_batch": self.threads_batch,
             "max_input_tokens": self.max_input_tokens,
             "max_new_tokens": self.max_new_tokens,
             "max_generation_seconds": self.max_generation_seconds,
             "temperature": self.temperature,
             "top_p": self.top_p,
             "top_k": self.top_k,
-            "repetition_penalty": self.repetition_penalty,
+            "min_p": self.min_p,
+            "presence_penalty": self.presence_penalty,
+            "repeat_penalty": self.repeat_penalty,
             "seed": self.seed,
+            "use_mmap": self.use_mmap,
             "last_generation": self.last_generation,
         }
 

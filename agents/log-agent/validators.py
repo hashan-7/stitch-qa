@@ -921,34 +921,31 @@ def deterministic_release_advice(
 
     if release_gate == "ALLOW_RELEASE":
         return (
-            "The runtime gate is ALLOW_RELEASE for this tested runtime scope only; "
-            "final project-level release judgment must consider the remaining QA evidence."
+            "Gate: ALLOW_RELEASE for the tested runtime scope; combine this result with the remaining QA evidence before project release."
         )
 
     if release_gate == "ALLOW_WITH_WARNINGS":
         return (
-            "The runtime gate is ALLOW_WITH_WARNINGS for this tested runtime scope only; "
-            "supplied runtime warnings must be reviewed with the remaining QA evidence."
+            "Gate: ALLOW_WITH_WARNINGS for the tested runtime scope; review runtime warnings with the remaining QA evidence."
         )
 
     if release_gate == "BLOCK_RELEASE":
         return (
-            "The runtime gate is BLOCK_RELEASE because confirmed tested-path runtime failures "
-            "require resolution and verification before release consideration."
+            "Gate: BLOCK_RELEASE until the confirmed tested-path failures are fixed and verified."
         )
 
     if test_result == "NOT_RUN":
         return (
-            "The runtime gate is REVIEW_REQUIRED because no executed runtime test result was established."
+            "Gate: REVIEW_REQUIRED because no executed runtime test result was established."
         )
 
     if test_result == "INCONCLUSIVE":
         return (
-            "The runtime gate is REVIEW_REQUIRED because the supplied runtime evidence is inconclusive."
+            "Gate: REVIEW_REQUIRED because the runtime evidence is inconclusive."
         )
 
     return (
-        "The runtime gate is REVIEW_REQUIRED until sufficient runtime evidence is available."
+        "Gate: REVIEW_REQUIRED until sufficient runtime evidence is available."
     )
 
 
@@ -956,16 +953,22 @@ def render_assessment(
     payload,
     base_analysis,
 ):
+    next_step = normalize_prose(
+        payload.next_verification
+    )
+
     return " ".join(
         unique_prose(
             [
                 payload.outcome_interpretation,
-                payload.scope_assurance,
-                payload.residual_runtime_risk,
                 deterministic_release_advice(
                     base_analysis
                 ),
-                payload.next_verification,
+                (
+                    f"Next: {next_step}"
+                    if next_step
+                    else None
+                ),
             ]
         )
     )
@@ -1005,6 +1008,10 @@ def merge_model_output(
         )
 
     merged["root_cause_groups"] = groups
+    merged["outcome_interpretation"] = payload.outcome_interpretation
+    merged["scope_assurance"] = payload.scope_assurance
+    merged["residual_runtime_risk"] = payload.residual_runtime_risk
+    merged["next_verification"] = payload.next_verification
     merged["summary"] = render_assessment(
         payload,
         base_analysis,
@@ -1066,3 +1073,4 @@ def merge_model_output(
     )
 
     return merged
+

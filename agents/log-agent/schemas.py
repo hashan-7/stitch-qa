@@ -140,6 +140,10 @@ class LogAnalysisResponse(BaseModel):
     diagnosis_confidence: str
     final_status: str
     summary: str
+    outcome_interpretation: str | None = None
+    scope_assurance: str | None = None
+    residual_runtime_risk: str | None = None
+    next_verification: str | None = None
     run_summary: dict[str, Any]
     root_cause_groups: list[RootCauseGroup]
     primary_root_cause: str | None = None
@@ -152,4 +156,6 @@ class LogAnalysisResponse(BaseModel):
     warnings: list[str]
     limitations: list[str]
     evidence_quality: str
+    llm_metrics: dict[str, Any] | None = None
     llm_error: str | None = None
+

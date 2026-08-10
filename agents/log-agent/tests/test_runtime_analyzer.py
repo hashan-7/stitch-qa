@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model_service import JsonObjectStoppingCriteria
+from model_service import MODEL_RESPONSE_SCHEMA, ModelService
 from runtime_analyzer import build_base_analysis
 from schemas import LogAnalysisRequest
 from validators import merge_model_output, validate_model_output
@@ -90,6 +90,10 @@ def test_structured_failure_analysis_is_complete_and_evidence_backed():
     assert result["run_summary"]["total"] == 4
     assert result["run_summary"]["passed"] == 2
     assert result["run_summary"]["failed"] == 2
+    assert result["summary"] == (
+        "pytest: 2/4 tests failed or errored across 1 root-cause group; "
+        "runtime gate BLOCK_RELEASE until fixes are verified."
+    )
     assert len(result["root_cause_groups"]) == 1
     assert len(result["root_cause_groups"][0]["affected_tests"]) == 2
     assert "Boundary-input validation" in result["primary_root_cause"]
@@ -161,29 +165,84 @@ def test_model_merge_refines_root_cause_without_replacing_deterministic_action_o
     assert merged["root_cause_groups"][0]["root_cause"] == payload.group_insights[0].root_cause
     assert merged["root_cause_groups"][0]["runtime_impact"] == original_impact
     assert merged["root_cause_groups"][0]["required_action"] == original_action
+    assert merged["outcome_interpretation"] == payload.outcome_interpretation
+    assert merged["scope_assurance"] == payload.scope_assurance
+    assert merged["residual_runtime_risk"] == payload.residual_runtime_risk
+    assert merged["next_verification"] == payload.next_verification
+    assert "Gate: BLOCK_RELEASE" in merged["summary"]
+    assert "Next:" in merged["summary"]
 
 
-class JsonStopTokenizer:
-    def decode(self, token_ids, skip_special_tokens=True):
-        values = token_ids.tolist()
-        return "}" if values and values[-1] == 9 else '"value"'
+class FakeGGUFModel:
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.last_kwargs = None
+
+    def tokenize(self, value, add_bos=False, special=True):
+        return list(range(max(1, len(value) // 12)))
+
+    def create_chat_completion(self, **kwargs):
+        self.last_kwargs = kwargs
+        return iter(self.chunks)
 
 
-def test_json_stopping_criteria_returns_one_dimensional_batch_mask():
-    criterion = JsonObjectStoppingCriteria(
-        JsonStopTokenizer(),
-        prompt_length=2,
-    )
-    input_ids = __import__("torch").tensor(
+def completion_chunk(content=None, finish_reason=None):
+    return {
+        "choices": [
+            {
+                "delta": (
+                    {"content": content}
+                    if content is not None
+                    else {}
+                ),
+                "finish_reason": finish_reason,
+            }
+        ]
+    }
+
+
+def test_gguf_model_service_uses_no_think_and_json_schema(monkeypatch):
+    payload = json.dumps(valid_model_payload())
+    model = FakeGGUFModel(
         [
-            [1, 2, 9],
-            [1, 2, 8],
+            completion_chunk(payload),
+            completion_chunk(finish_reason="stop"),
         ]
     )
-    result = criterion(
-        input_ids,
-        scores=None,
+    service = ModelService()
+    service.model = model
+    service.model_name = service.primary_model
+    monkeypatch.setattr(service, "max_generation_seconds", 30.0)
+    result = service.generate(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "analyze"},
+        ]
     )
-    assert result.shape == (2,)
-    assert result.dtype == __import__("torch").bool
-    assert result.tolist() == [True, False]
+    assert json.loads(result) == valid_model_payload()
+    assert model.last_kwargs["response_format"]["schema"] == MODEL_RESPONSE_SCHEMA
+    assert model.last_kwargs["messages"][0]["content"].endswith("/no_think")
+    assert model.last_kwargs["stream"] is True
+    assert service.last_generation["backend"] == "llama.cpp"
+    assert service.last_generation["timed_out"] is False
+
+
+def test_gguf_model_service_rejects_output_length_stop():
+    partial = '{"outcome_interpretation":"partial"}'
+    model = FakeGGUFModel(
+        [
+            completion_chunk(partial),
+            completion_chunk(finish_reason="length"),
+        ]
+    )
+    service = ModelService()
+    service.model = model
+    service.model_name = service.primary_model
+    with pytest.raises(RuntimeError, match="output token limit"):
+        service.generate(
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "analyze"},
+            ]
+        )
+

@@ -889,6 +889,18 @@ def normalize_log_agent_data(data):
         "summary": data.get(
             "summary"
         ),
+        "outcome_interpretation": data.get(
+            "outcome_interpretation"
+        ),
+        "scope_assurance": data.get(
+            "scope_assurance"
+        ),
+        "residual_runtime_risk": data.get(
+            "residual_runtime_risk"
+        ),
+        "next_verification": data.get(
+            "next_verification"
+        ),
         "run_summary": (
             data.get(
                 "run_summary"
@@ -949,6 +961,18 @@ def normalize_log_agent_data(data):
                 "evidence_quality"
             )
             or "NONE"
+        ),
+        "llm_metrics": (
+            data.get(
+                "llm_metrics"
+            )
+            if isinstance(
+                data.get(
+                    "llm_metrics"
+                ),
+                dict,
+            )
+            else None
         ),
         "llm_error": data.get(
             "llm_error"
@@ -1503,3 +1527,4 @@ def suggest_code_fix_with_agent(
         "data": data,
         "error": None,
     }
+
