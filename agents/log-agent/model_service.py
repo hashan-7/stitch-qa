@@ -18,6 +18,9 @@ MODEL_RESPONSE_SCHEMA = {
                 "properties": {
                     "f": {
                         "type": "array",
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "uniqueItems": True,
                         "items": {"type": "integer", "minimum": 1, "maximum": 16},
                     },
                     "k": {"type": "string"},

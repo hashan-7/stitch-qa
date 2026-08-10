@@ -241,7 +241,12 @@ def test_response_schema_uses_compact_reasoning_contract():
     assert group_schema["type"] == "object"
     assert group_schema["additionalProperties"] is False
     assert group_schema["required"] == ["f", "k", "c", "i", "a"]
-    assert group_schema["properties"]["f"]["items"]["type"] == "integer"
+    failure_refs_schema = group_schema["properties"]["f"]
+    assert failure_refs_schema["type"] == "array"
+    assert failure_refs_schema["minItems"] == 1
+    assert failure_refs_schema["maxItems"] == 16
+    assert failure_refs_schema["uniqueItems"] is True
+    assert failure_refs_schema["items"]["type"] == "integer"
 
 
 def test_malformed_positional_group_output_is_rejected():
@@ -249,6 +254,14 @@ def test_malformed_positional_group_output_is_rejected():
     data = valid_model_payload()
     data["g"] = [[1, 2, "BOUNDARY_VALIDATION"]]
     with pytest.raises(ValueError, match="must be a JSON object"):
+        validate_model_output(json.dumps(data), base)
+
+
+def test_empty_evidence_reference_group_is_rejected():
+    base = build_base_analysis(build_request())
+    data = valid_model_payload()
+    data["g"][0]["f"] = []
+    with pytest.raises(ValueError, match="must reference evidence numbers"):
         validate_model_output(json.dumps(data), base)
 
 
