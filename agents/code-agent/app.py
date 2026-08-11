@@ -21,10 +21,13 @@ REPAIR_DISPLAY_NAME = "Repair Assurance Intelligence Analyst"
 LEGACY_AGENT_NAME = "code-agent"
 MAX_AI_SOURCE_FINDINGS = 8
 MAX_REPAIR_CONTRACTS = 8
-MAX_SOURCE_CONTEXT_FILES = 8
-MAX_SOURCE_CONTEXT_CHARS = 24000
+MAX_SOURCE_CONTEXT_FILES = 4
+MAX_SOURCE_CONTEXT_CHARS = 12000
 MAX_SOURCE_AI_CONTEXT_CHARS = 18000
 MAX_SOURCE_AI_FILES = 6
+MAX_REPAIR_RUNTIME_GROUPS = 6
+MAX_REPAIR_SOURCE_FINDINGS = 12
+MAX_REPAIR_EVIDENCE_PER_GROUP = 6
 
 SEVERITY_ORDER = {
     "CRITICAL": 0,
@@ -104,11 +107,10 @@ REPAIR_AI_SCHEMA = {
                     "e": {"type": "string", "minLength": 8, "maxLength": 220},
                     "v": {"type": "string", "minLength": 8, "maxLength": 240},
                     "g": {"type": "string", "minLength": 8, "maxLength": 240},
-                    "p": {"type": "string", "maxLength": 900},
                     "k": {"type": "boolean"},
                     "kr": {"type": "string", "maxLength": 160},
                 },
-                "required": ["r", "f", "t", "y", "i", "a", "e", "v", "g", "p", "k", "kr"],
+                "required": ["r", "f", "t", "y", "i", "a", "e", "v", "g", "k", "kr"],
                 "additionalProperties": False,
             },
         },
@@ -339,7 +341,6 @@ class ModelRepairGuidance(BaseModel):
     side_effect_considerations: str = Field(alias="e", min_length=8, max_length=220)
     targeted_verification: str = Field(alias="v", min_length=8, max_length=240)
     regression_verification: str = Field(alias="g", min_length=8, max_length=240)
-    suggested_patch: str = Field(alias="p", max_length=900)
     current_knowledge_required: bool = Field(alias="k")
     current_knowledge_reason: str = Field(alias="kr", max_length=160)
 
@@ -378,11 +379,13 @@ class ModelService:
         self.context_tokens = max(2048, int(os.getenv("MODEL_CONTEXT_TOKENS", "4096")))
         self.batch_tokens = max(64, min(self.context_tokens, int(os.getenv("MODEL_BATCH_TOKENS", "128"))))
         self.source_new_tokens = max(128, int(os.getenv("SOURCE_MODEL_MAX_NEW_TOKENS", "320")))
-        self.repair_new_tokens = max(160, int(os.getenv("REPAIR_MODEL_MAX_NEW_TOKENS", "384")))
+        self.repair_new_tokens = max(160, int(os.getenv("REPAIR_MODEL_MAX_NEW_TOKENS", "320")))
         self.max_input_tokens = max(1024, int(os.getenv("MODEL_MAX_INPUT_TOKENS", "3000")))
         response_budget = max(self.source_new_tokens, self.repair_new_tokens)
         context_safe_input = max(1024, self.context_tokens - response_budget - 128)
         self.max_input_tokens = min(self.max_input_tokens, context_safe_input)
+        self.repair_max_input_tokens = max(1024, int(os.getenv("REPAIR_MODEL_MAX_INPUT_TOKENS", "2200")))
+        self.repair_max_input_tokens = min(self.repair_max_input_tokens, self.max_input_tokens)
         self.max_generation_seconds = max(20.0, float(os.getenv("MODEL_MAX_GENERATION_SECONDS", "120")))
         self.threads = max(1, int(os.getenv("MODEL_THREADS", "2")))
         self.threads_batch = max(1, int(os.getenv("MODEL_THREADS_BATCH", str(self.threads))))
@@ -492,16 +495,17 @@ class ModelService:
         if callable(reset):
             reset()
 
-    def generate_json(self, messages, schema, max_new_tokens, task):
+    def generate_json(self, messages, schema, max_new_tokens, task, input_token_limit=None, enforce_schema=True):
         self.last_generation = None
         model = self.load()
         with self.generation_lock:
             self._reset_inference_state(model)
             try:
                 input_tokens = self._count_tokens(model, messages)
-                if input_tokens > self.max_input_tokens:
+                token_limit = self.max_input_tokens if input_token_limit is None else min(self.max_input_tokens, max(1024, int(input_token_limit)))
+                if input_tokens > token_limit:
                     raise RuntimeError(
-                        f"Agent 3 model input contains approximately {input_tokens} tokens, exceeding the configured limit of {self.max_input_tokens}."
+                        f"Agent 3 model input contains approximately {input_tokens} tokens, exceeding the configured limit of {token_limit}."
                     )
 
                 started = time.monotonic()
@@ -509,9 +513,10 @@ class ModelService:
                 finish_reason = None
                 timed_out = False
                 first_content_seconds = None
+                response_format = {"type": "json_object", "schema": schema} if enforce_schema else {"type": "json_object"}
                 stream = model.create_chat_completion(
                     messages=messages,
-                    response_format={"type": "json_object", "schema": schema},
+                    response_format=response_format,
                     max_tokens=max_new_tokens,
                     temperature=self.temperature,
                     top_p=self.top_p,
@@ -617,6 +622,7 @@ class ModelService:
             "max_input_tokens": self.max_input_tokens,
             "source_max_new_tokens": self.source_new_tokens,
             "repair_max_new_tokens": self.repair_new_tokens,
+            "repair_max_input_tokens": self.repair_max_input_tokens,
             "threads": self.threads,
             "last_generation": self.last_generation,
         }
@@ -1634,7 +1640,93 @@ def extract_symbols(source_file):
     return symbols[:12]
 
 
+def compact_repair_contract(contract):
+    return {
+        "id": contract.contract_id,
+        "refs": list(dict.fromkeys(contract.finding_refs)),
+        "priority": clean_text(contract.priority, 20),
+        "objective": clean_text(contract.repair_objective, 260),
+        "strategy": clean_text(contract.repair_strategy, 360),
+        "boundary": clean_text(contract.change_boundary, 300),
+        "protect": clean_text(contract.protected_behavior, 300),
+        "risk": clean_text(contract.side_effect_risk, 40),
+        "verification": clean_text(contract.verification, 320),
+        "done": clean_text(contract.done_condition, 260),
+    }
+
+
+def compact_runtime_group(group):
+    evidence = []
+    for item in normalize_list(group.get("evidence"))[:MAX_REPAIR_EVIDENCE_PER_GROUP]:
+        if not isinstance(item, dict):
+            continue
+        evidence.append(
+            {
+                "test": clean_text(item.get("test_name"), 180),
+                "test_file": clean_text(item.get("test_file"), 300),
+                "test_line": item.get("test_line"),
+                "app_file": clean_text(item.get("application_file"), 300),
+                "app_line": item.get("application_line"),
+                "expected": clean_text(item.get("expected"), 120),
+                "actual": clean_text(item.get("actual"), 120),
+                "exception": clean_text(item.get("exception_type"), 120),
+                "message": clean_text(item.get("exception_message"), 220),
+            }
+        )
+    return {
+        "id": clean_text(group.get("group_id"), 80),
+        "category": clean_text(group.get("category"), 80),
+        "origin": clean_text(group.get("failure_origin"), 80),
+        "cause": clean_text(group.get("root_cause"), 420),
+        "impact": clean_text(group.get("runtime_impact"), 300),
+        "action": clean_text(group.get("required_action"), 360),
+        "tests": [clean_text(value, 180) for value in normalize_list(group.get("affected_tests"))[:12]],
+        "evidence": evidence,
+    }
+
+
+def compact_source_finding(item):
+    return {
+        "id": clean_text(item.get("id"), 80),
+        "file": clean_text(item.get("file_path"), 300),
+        "line": item.get("line"),
+        "category": clean_text(item.get("category"), 80),
+        "severity": clean_text(item.get("severity"), 40),
+        "title": clean_text(item.get("title"), 160),
+        "evidence": clean_text(item.get("evidence"), 260),
+        "impact": clean_text(item.get("impact"), 260),
+        "recommendation": clean_text(item.get("recommendation"), 300),
+    }
+
+
 def repair_payload(request, contracts):
+    linked_refs = {
+        ref
+        for contract in contracts
+        for ref in contract.finding_refs
+        if ref
+    }
+
+    runtime_groups = []
+    for group in normalize_list((request.runtime_analysis or {}).get("root_cause_groups")):
+        if not isinstance(group, dict):
+            continue
+        group_id = str(group.get("group_id") or "")
+        if group_id in linked_refs:
+            runtime_groups.append(compact_runtime_group(group))
+        if len(runtime_groups) >= MAX_REPAIR_RUNTIME_GROUPS:
+            break
+
+    source_findings = []
+    for item in normalize_list((request.source_review or {}).get("findings")):
+        if not isinstance(item, dict):
+            continue
+        finding_id = str(item.get("id") or "")
+        if finding_id in linked_refs:
+            source_findings.append(compact_source_finding(item))
+        if len(source_findings) >= MAX_REPAIR_SOURCE_FINDINGS:
+            break
+
     source_files = []
     used = 0
     for item in request.source_files[:MAX_SOURCE_CONTEXT_FILES]:
@@ -1642,6 +1734,8 @@ def repair_payload(request, contracts):
         if remaining <= 0:
             break
         content = item.content[:remaining]
+        if not content:
+            continue
         used += len(content)
         source_files.append(
             {
@@ -1653,36 +1747,31 @@ def repair_payload(request, contracts):
         )
 
     return {
-        "project_type": request.project_type,
+        "project": request.project_type,
         "execution": {
-            "command": request.command,
+            "command": clean_text(request.command, 300),
             "success": request.success,
             "exit_code": request.exit_code,
-            "failure_type": request.failure_type,
-            "help_message": clean_text(request.help_message, 500),
+            "failure_type": clean_text(request.failure_type, 120),
         },
-        "runtime_analysis": request.runtime_analysis or {},
-        "source_review": {
-            "status": (request.source_review or {}).get("status"),
-            "risk_level": (request.source_review or {}).get("risk_level"),
-            "findings": normalize_list((request.source_review or {}).get("findings"))[:40],
-        },
-        "contracts": [contract.model_dump() for contract in contracts],
+        "runtime_groups": runtime_groups,
+        "source_findings": source_findings,
+        "contracts": [compact_repair_contract(contract) for contract in contracts],
         "source_files": source_files,
     }
 
 
 def build_repair_messages(request, contracts):
     system = (
-        "You are Stitch QA's Repair Assurance Intelligence Analyst. Agent 2 repair contracts are authoritative and define WHAT may be repaired. "
-        "Your job is to explain HOW to implement each contract safely in the supplied Python or Java/Maven code without editing the project. "
-        "Never broaden a contract boundary, override protected behavior, invent files, lines, symbols, tests, dependency versions, vulnerabilities, or runtime results. "
-        "Target files must be selected only from supplied source_files. When a contract is testing-only and no test file exists, target_files may be empty and the approach must describe the tests to add without modifying production behavior. "
-        "Environment-only contracts require no application code guidance and will be handled deterministically outside the model. "
-        "Suggested patch text is optional. If supplied, keep it small and local; Stitch QA will mark it unvalidated and will never auto-apply it. "
-        "Targeted verification must confirm the referenced repair objective; regression verification must protect unaffected behavior. "
-        "Set current knowledge true only for version/vendor/dependency compatibility/deprecation/security-advisory facts that genuinely require current trusted documentation. "
-        "Return one guidance item for every submitted repair contract, exactly once, and return only JSON matching the required schema."
+        "You are Stitch QA's Repair Assurance Intelligence Analyst. Agent 2 contracts are authoritative. "
+        "Explain how to implement each supplied contract safely in the supplied Python or Java/Maven source. "
+        "Return exactly one item for every contract ID and exactly the same finding refs. "
+        "Never broaden the contract boundary, override protected behavior, invent files, symbols, tests, runtime facts, dependency versions, or vulnerabilities. "
+        "Target files may only come from source_files. Use concise implementation guidance, not patches. "
+        "Testing-only contracts may have no target production file. Environment-only contracts are handled outside this model. "
+        "Targeted verification confirms the repair objective; regression verification protects unaffected behavior. "
+        "Set current knowledge true only when current version, vendor, compatibility, deprecation, dependency, or security-advisory documentation is genuinely required. "
+        "Return only JSON matching the schema."
     )
     return [
         {"role": "system", "content": system},
@@ -1816,7 +1905,6 @@ def validate_repair_plan(plan, request, contracts):
                     target_symbols.append(symbol)
 
         current_required = grounded_current_knowledge_for_contract(contract)
-        patch = clean_text(item.suggested_patch, 900)
         normalized.append(
             {
                 "contract": contract,
@@ -1827,7 +1915,7 @@ def validate_repair_plan(plan, request, contracts):
                 "side_effect_considerations": clean_text(item.side_effect_considerations, 280),
                 "targeted_verification": clean_text(item.targeted_verification, 300),
                 "regression_verification": clean_text(item.regression_verification, 300),
-                "suggested_patch": patch or None,
+                "suggested_patch": None,
                 "current_knowledge_required": current_required,
                 "current_knowledge_reason": (
                     clean_text(item.current_knowledge_reason, 220)
@@ -1902,6 +1990,8 @@ def repair_assurance_request(request):
                 REPAIR_AI_SCHEMA,
                 model_service.repair_new_tokens,
                 "repair-assurance",
+                model_service.repair_max_input_tokens,
+                False,
             )
             plan = parse_repair_model_output(text)
             model_guidance = validate_repair_plan(plan, request, code_contracts)
@@ -1930,8 +2020,8 @@ def repair_assurance_request(request):
                     "side_effect_considerations": item["side_effect_considerations"],
                     "targeted_verification": item["targeted_verification"] or clean_text(contract.verification, 300),
                     "regression_verification": item["regression_verification"],
-                    "suggested_patch": item["suggested_patch"],
-                    "patch_validation_status": "NOT_VALIDATED" if item["suggested_patch"] else "NOT_GENERATED",
+                    "suggested_patch": None,
+                    "patch_validation_status": "NOT_GENERATED",
                     "current_knowledge_required": item["current_knowledge_required"],
                     "current_knowledge_reason": item["current_knowledge_reason"],
                     "status": "PENDING_IMPLEMENTATION",
@@ -1961,7 +2051,6 @@ def repair_assurance_request(request):
     risk = highest_risk(
         *[clean_text(contract.side_effect_risk, 40) or "UNKNOWN" for contract in contracts]
     )
-    patches = [item.get("suggested_patch") for item in guidance if item.get("suggested_patch")]
     code_change_count = sum(1 for item in guidance if item.get("status") != "NO_CODE_CHANGE_REQUIRED")
     if code_change_count:
         summary = (
@@ -1986,16 +2075,16 @@ def repair_assurance_request(request):
         "auto_apply": False,
         "summary": summary,
         "guidance": guidance,
-        "suggested_patch": patches[0] if len(patches) == 1 else None,
+        "suggested_patch": None,
         "verification": "Complete targeted confirmation for each repair assurance item, then run the relevant full regression workflow before considering the repair verified.",
         "current_knowledge_required": current_required,
         "current_knowledge_reason": current_reason,
         "evidence_lineage": [build_evidence_lineage(contract) for contract in contracts],
         "shadow_validation_status": "NOT_RUN",
-        "warnings": (["One or more model-generated patch suggestions are unvalidated and must not be applied automatically."] if patches else []),
+        "warnings": [],
         "limitations": [
             "Repair Assurance provides implementation guidance but never modifies the original project automatically.",
-            "Shadow Repair Validation is not executed in this service response; any generated patch remains unvalidated until an isolated verification workflow proves it.",
+            "Shadow Repair Validation is not executed in this service response; Repair Assurance does not emit an unvalidated patch.",
             "Current external facts are not fetched inside this agent; cases marked current_knowledge_required need trusted documentation before implementation.",
         ],
         "llm_metrics": model_service.last_generation,

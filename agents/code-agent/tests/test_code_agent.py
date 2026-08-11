@@ -350,7 +350,6 @@ def test_ai_repair_guidance_cannot_escape_contract_file_boundary(monkeypatch):
                 "e": "Keep valid calculations unchanged and avoid unrelated refactoring.",
                 "v": "Rerun the two affected failing tests and confirm they pass.",
                 "g": "Run the complete pytest suite and confirm no new failures.",
-                "p": "",
                 "k": True,
                 "kr": "Current framework compatibility documentation is required.",
             }
@@ -552,3 +551,188 @@ def test_model_service_resets_state_after_generation_failure():
     assert json.loads(recovered) == {"c": "HIGH", "x": []}
     assert model.reset_calls == 4
 
+
+
+def test_repair_payload_keeps_only_contract_linked_evidence():
+    runtime_analysis = {
+        "summary": "duplicate runtime summary that should not be sent",
+        "root_cause_groups": [
+            {
+                "group_id": "RQI-001",
+                "category": "INPUT_VALIDATION",
+                "root_cause": "Validated missing boundary validation.",
+                "runtime_impact": "Two tested paths fail.",
+                "required_action": "Add narrow validation.",
+                "affected_tests": ["test_divide"],
+                "evidence": [
+                    {
+                        "test_name": "test_divide",
+                        "application_file": "app.py",
+                        "application_line": 2,
+                        "expected": "ValueError",
+                        "actual": "ZeroDivisionError",
+                    }
+                ],
+            },
+            {
+                "group_id": "RQI-999",
+                "category": "OTHER",
+                "root_cause": "Unrelated runtime group.",
+                "evidence": [],
+            },
+        ],
+    }
+    source_review = {
+        "status": "COMPLETED",
+        "risk_level": "MEDIUM",
+        "findings": [
+            {
+                "id": "SQ-SRC-001",
+                "file_path": "app.py",
+                "line": 2,
+                "category": "reliability",
+                "severity": "MEDIUM",
+                "title": "Linked source evidence",
+            },
+            {
+                "id": "SQ-SRC-999",
+                "file_path": "other.py",
+                "line": 1,
+                "category": "other",
+                "severity": "LOW",
+                "title": "Unrelated source evidence",
+            },
+        ],
+    }
+    contract = runtime_contract()
+    contract["finding_refs"] = ["RQI-001", "SQ-SRC-001"]
+    content = "def divide(a, b):\n    return a / b\n" + "x = 1\n" * 5000
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "success": False,
+            "exit_code": 1,
+            "runtime_analysis": runtime_analysis,
+            "source_review": source_review,
+            "repair_plan": {"stitch_repair_contracts": [contract]},
+            "source_files": [{"path": "app.py", "content": content}],
+        }
+    )
+    contracts = agent3.repair_contracts_from_request(request)
+    payload = agent3.repair_payload(request, contracts)
+
+    assert "runtime_analysis" not in payload
+    assert "source_review" not in payload
+    assert [item["id"] for item in payload["runtime_groups"]] == ["RQI-001"]
+    assert [item["id"] for item in payload["source_findings"]] == ["SQ-SRC-001"]
+    assert len(payload["source_files"]) == 1
+    assert len(payload["source_files"][0]["content"]) <= agent3.MAX_SOURCE_CONTEXT_CHARS
+    assert payload["contracts"][0]["id"] == "STITCH-RC-001"
+
+
+def test_repair_assurance_uses_task_specific_input_budget(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", True)
+    captured = {}
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "success": False,
+            "exit_code": 1,
+            "runtime_analysis": {
+                "root_cause_groups": [
+                    {
+                        "group_id": "RQI-001",
+                        "evidence": [
+                            {
+                                "application_file": "app.py",
+                                "application_line": 2,
+                            }
+                        ],
+                    }
+                ]
+            },
+            "repair_plan": {"stitch_repair_contracts": [runtime_contract()]},
+            "source_files": [
+                {
+                    "path": "app.py",
+                    "content": "def divide(a, b):\n    return a / b\n",
+                }
+            ],
+        }
+    )
+    payload = {
+        "c": "HIGH",
+        "x": [
+            {
+                "r": "STITCH-RC-001",
+                "f": ["RQI-001"],
+                "t": ["app.py"],
+                "y": "divide",
+                "i": "Restore controlled invalid-input behavior.",
+                "a": "Add narrow validation before the unsafe division.",
+                "e": "Preserve valid calculations and avoid unrelated refactoring.",
+                "v": "Rerun the affected test and confirm the expected behavior.",
+                "g": "Run the complete suite and confirm no new failures.",
+                "k": False,
+                "kr": "",
+            }
+        ],
+    }
+
+    def fake_generate(*args):
+        captured["args"] = args
+        return json.dumps(payload)
+
+    monkeypatch.setattr(agent3.model_service, "generate_json", fake_generate)
+    result = agent3.repair_assurance_request(request)
+
+    assert result["status"] == "COMPLETED"
+    assert result["mode"] == "ai-reasoned-validated"
+    assert captured["args"][4] == agent3.model_service.repair_max_input_tokens
+    assert captured["args"][5] is False
+    assert result["guidance"][0]["suggested_patch"] is None
+    assert result["guidance"][0]["patch_validation_status"] == "NOT_GENERATED"
+
+
+def test_model_service_repair_mode_uses_json_object_without_schema():
+    payload = json.dumps({"c": "HIGH", "x": []}, separators=(",", ":"))
+    captured = {}
+
+    class FakeModel:
+        def reset(self):
+            return None
+
+        def tokenize(self, value, add_bos=False, special=True):
+            return list(range(max(1, len(value) // 8)))
+
+        def create_chat_completion(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": payload},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+
+    service = agent3.ModelService()
+    service.model = FakeModel()
+    service.model_name = service.primary_model
+    service.max_input_tokens = 10000
+    text = service.generate_json(
+        [
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": "Return repair guidance."},
+        ],
+        agent3.REPAIR_AI_SCHEMA,
+        200,
+        "repair-assurance",
+        2200,
+        False,
+    )
+
+    assert json.loads(text) == {"c": "HIGH", "x": []}
+    assert captured["response_format"] == {"type": "json_object"}

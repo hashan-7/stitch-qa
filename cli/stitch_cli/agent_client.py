@@ -1,3 +1,5 @@
+import ast
+import re
 from pathlib import Path
 
 import requests
@@ -27,9 +29,9 @@ MAX_RUNTIME_RAW_FAILURE_CHARS = 2000
 MAX_SOURCE_REVIEW_FILES = 100
 MAX_SOURCE_FILE_CHARS = 50000
 MAX_SOURCE_REVIEW_CHARS = 300000
-MAX_REPAIR_ASSURANCE_FILES = 8
-MAX_REPAIR_ASSURANCE_FILE_CHARS = 30000
-MAX_REPAIR_ASSURANCE_CHARS = 90000
+MAX_REPAIR_ASSURANCE_FILES = 4
+MAX_REPAIR_ASSURANCE_FILE_CHARS = 12000
+MAX_REPAIR_ASSURANCE_CHARS = 16000
 
 
 def normalize_list(value):
@@ -1610,6 +1612,311 @@ def build_repair_assurance_source_review(source_review_data):
     }
 
 
+def repair_assurance_contract_text(contract):
+    return " ".join(
+        str(contract.get(key) or "").lower()
+        for key in (
+            "title",
+            "priority_reason",
+            "repair_objective",
+            "repair_strategy",
+            "change_boundary",
+            "protected_behavior",
+            "verification",
+            "done_condition",
+        )
+    )
+
+
+def repair_assurance_environment_only(contract):
+    text = repair_assurance_contract_text(contract)
+    environment_signal = any(
+        value in text
+        for value in (
+            "maven is not installed",
+            "maven wrapper",
+            "environment",
+            "build-tool availability",
+            "build tool availability",
+            "python is not installed",
+            "pytest is not installed",
+        )
+    )
+    source_exclusion = any(
+        value in text
+        for value in (
+            "do not modify application source",
+            "keep application source code outside this repair",
+            "application source remains outside this repair",
+        )
+    )
+    return environment_signal and source_exclusion
+
+
+def repair_assurance_testing_only(contract):
+    text = repair_assurance_contract_text(contract)
+    testing_signal = any(
+        value in text
+        for value in (
+            "no automated tests",
+            "missing tests",
+            "add focused tests",
+            "test files and test configuration",
+        )
+    )
+    source_exclusion = any(
+        value in text
+        for value in (
+            "do not modify application behavior",
+            "keep production code unchanged",
+            "preserve existing application behavior",
+        )
+    )
+    return testing_signal and source_exclusion
+
+
+def repair_assurance_current_knowledge(contract, repair_data):
+    if not bool((repair_data or {}).get("current_knowledge_required")):
+        return False
+    text = repair_assurance_contract_text(contract)
+    return any(
+        value in text
+        for value in (
+            "version",
+            "compatibility",
+            "deprecation",
+            "deprecated",
+            "security advisory",
+            "cve",
+            "vendor",
+            "jdk",
+            "plugin",
+            "dependency version",
+            "dependency compatibility",
+        )
+    )
+
+
+def repair_assurance_extract_symbols(path, content):
+    path = str(path or "").lower()
+    symbols = []
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(content or "")
+        except SyntaxError:
+            return []
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name not in symbols:
+                    symbols.append(node.name)
+    elif path.endswith(".java"):
+        class_match = re.search(r"\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)", content or "")
+        if class_match:
+            symbols.append(class_match.group(1))
+        for match in re.finditer(
+            r"\b(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>\[\], ?.]*?)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+            content or "",
+        ):
+            name = match.group(1)
+            if name not in symbols:
+                symbols.append(name)
+    return symbols[:12]
+
+
+def repair_assurance_contract_paths(
+    contract,
+    scan_result,
+    source_review_data,
+    agent_data,
+):
+    source_review = source_review_data if isinstance(source_review_data, dict) else {}
+    runtime_analysis = agent_data if isinstance(agent_data, dict) else {}
+    discovered = normalize_list(scan_result.get("source_review", {}).get("source_files"))
+    source_by_id = {
+        str(item.get("id")): item
+        for item in normalize_list(source_review.get("findings"))
+        if isinstance(item, dict) and item.get("id")
+    }
+    runtime_by_id = {
+        str(item.get("group_id")): item
+        for item in normalize_list(runtime_analysis.get("root_cause_groups"))
+        if isinstance(item, dict) and item.get("group_id")
+    }
+    paths = []
+
+    def add(value):
+        path = str(value or "").strip()
+        if path and path in discovered and path not in paths:
+            paths.append(path)
+
+    for ref in normalize_list(contract.get("finding_refs")):
+        source_item = source_by_id.get(str(ref))
+        if source_item:
+            add(source_item.get("file_path"))
+        runtime_item = runtime_by_id.get(str(ref))
+        if runtime_item:
+            for evidence in normalize_list(runtime_item.get("evidence")):
+                if isinstance(evidence, dict):
+                    add(evidence.get("application_file"))
+    return paths[:MAX_REPAIR_ASSURANCE_FILES]
+
+
+def build_client_repair_assurance_fallback(
+    scan_result,
+    execution_result,
+    agent_data,
+    repair_data,
+    source_review_data,
+    source_files,
+    error,
+):
+    repair_plan = repair_data if isinstance(repair_data, dict) else {}
+    contracts = [
+        item
+        for item in normalize_list(repair_plan.get("stitch_repair_contracts"))
+        if isinstance(item, dict) and item.get("contract_id")
+    ]
+    if not contracts:
+        return None
+
+    source_file_map = {
+        str(item.get("path")): item
+        for item in source_files
+        if isinstance(item, dict) and item.get("path")
+    }
+    guidance = []
+    risk_order = {
+        "UNKNOWN": -1,
+        "NONE": 0,
+        "INFO": 1,
+        "LOW": 2,
+        "MEDIUM": 3,
+        "HIGH": 4,
+        "CRITICAL": 5,
+    }
+    risks = []
+
+    for index, contract in enumerate(contracts, start=1):
+        contract_id = str(contract.get("contract_id"))
+        finding_refs = list(dict.fromkeys(str(ref) for ref in normalize_list(contract.get("finding_refs")) if ref))
+        environment_only = repair_assurance_environment_only(contract)
+        testing_only = repair_assurance_testing_only(contract)
+        target_files = repair_assurance_contract_paths(
+            contract,
+            scan_result,
+            source_review_data,
+            agent_data,
+        )
+        if environment_only or testing_only:
+            target_files = []
+
+        target_symbols = []
+        for path in target_files:
+            source_item = source_file_map.get(path) or {}
+            for symbol in repair_assurance_extract_symbols(path, source_item.get("content") or ""):
+                if symbol not in target_symbols:
+                    target_symbols.append(symbol)
+
+        objective = str(contract.get("repair_objective") or "Implement the Agent 2 repair objective within the approved boundary.")
+        strategy = str(contract.get("repair_strategy") or "Apply the smallest evidence-backed change allowed by the Agent 2 contract.")
+        verification = str(contract.get("verification") or "Confirm the repair objective, then run the relevant regression workflow.")
+        side_effect_risk = str(contract.get("side_effect_risk") or "UNKNOWN").upper()
+        if side_effect_risk not in risk_order:
+            side_effect_risk = "UNKNOWN"
+        risks.append(side_effect_risk)
+
+        if environment_only:
+            approach = "No application source change is justified. Resolve only the environment, build-tool, or wrapper availability problem defined by Agent 2."
+            status = "NO_CODE_CHANGE_REQUIRED"
+            patch_status = "NOT_APPLICABLE"
+            regression = "After the environment blocker is removed, use the resulting complete build or test run as runtime regression evidence."
+        elif testing_only:
+            approach = "Add focused automated tests using the detected project conventions and keep production behavior unchanged unless a separate validated finding requires a source repair."
+            status = "PENDING_IMPLEMENTATION"
+            patch_status = "NOT_GENERATED"
+            regression = "After the new tests are discovered and pass, run all existing project checks and confirm no regression."
+        else:
+            approach = strategy
+            status = "PENDING_IMPLEMENTATION"
+            patch_status = "NOT_GENERATED"
+            regression = "After targeted confirmation, run the complete available test suite or project checks and confirm no new failure is introduced."
+
+        current_required = repair_assurance_current_knowledge(contract, repair_plan)
+        current_reason = None
+        if current_required:
+            current_reason = str(
+                repair_plan.get("current_knowledge_reason")
+                or "Current trusted documentation is required for this repair contract before implementation."
+            )
+
+        guidance.append(
+            {
+                "guidance_id": f"RAI-{index:03d}",
+                "repair_contract_ref": contract_id,
+                "finding_refs": finding_refs,
+                "target_files": target_files,
+                "target_symbols": target_symbols,
+                "implementation_intent": objective,
+                "code_level_approach": approach,
+                "change_boundary": str(contract.get("change_boundary") or "Do not broaden the repair beyond the Agent 2 contract."),
+                "protected_behavior": str(contract.get("protected_behavior") or "Preserve unaffected behavior represented by the validated evidence."),
+                "side_effect_considerations": f"Respect the Agent 2 side-effect risk classification ({side_effect_risk}) and avoid unrelated refactoring.",
+                "targeted_verification": verification,
+                "regression_verification": regression,
+                "suggested_patch": None,
+                "patch_validation_status": patch_status,
+                "current_knowledge_required": current_required,
+                "current_knowledge_reason": current_reason,
+                "status": status,
+            }
+        )
+
+    risk_level = max(risks, key=lambda value: risk_order.get(value, -1), default="UNKNOWN")
+    current_required = any(item["current_knowledge_required"] for item in guidance)
+    current_reason = next(
+        (item["current_knowledge_reason"] for item in guidance if item["current_knowledge_required"] and item["current_knowledge_reason"]),
+        None,
+    )
+    return {
+        "agent_id": "repair-assurance-analyst",
+        "display_name": "Repair Assurance Intelligence Analyst",
+        "agent_version": "3.0",
+        "agent": "code-agent",
+        "mode": "deterministic-client-fallback",
+        "model": None,
+        "status": "COMPLETED",
+        "confidence": "MEDIUM",
+        "risk_level": risk_level,
+        "auto_apply": False,
+        "summary": (
+            f"Prepared {len(guidance)} contract-bound deterministic repair assurance item(s) from Agent 2 evidence because remote AI enrichment was unavailable. "
+            "The fallback preserves repair boundaries and does not modify the project automatically."
+        ),
+        "guidance": guidance,
+        "suggested_patch": None,
+        "verification": "Complete targeted confirmation for each repair assurance item, then run the relevant full regression workflow before considering the repair verified.",
+        "current_knowledge_required": current_required,
+        "current_knowledge_reason": current_reason,
+        "evidence_lineage": [
+            {
+                "repair_contract_ref": item["repair_contract_ref"],
+                "finding_refs": item["finding_refs"],
+                "guidance_status": "LINKED",
+            }
+            for item in guidance
+        ],
+        "shadow_validation_status": "NOT_RUN",
+        "warnings": [f"Remote Repair Assurance AI was unavailable: {error}"],
+        "limitations": [
+            "Remote AI enrichment was unavailable for this request; deterministic client-side Repair Assurance was built only from validated Agent 2, runtime, source-review, and local source evidence.",
+            "Repair Assurance never modifies the original project automatically.",
+            "Shadow Repair Validation was not executed and no patch was generated.",
+        ],
+        "llm_metrics": None,
+        "llm_error": str(error),
+    }
+
+
 def suggest_code_fix_with_agent(
     code_agent_url,
     scan_result,
@@ -1651,6 +1958,21 @@ def suggest_code_fix_with_agent(
     )
 
     if not result.get("success"):
+        fallback = build_client_repair_assurance_fallback(
+            scan_result,
+            execution_result,
+            agent_data,
+            repair_data,
+            source_review_data,
+            source_files,
+            result.get("error") or "Remote Repair Assurance request failed.",
+        )
+        if fallback is not None:
+            return {
+                "success": True,
+                "data": normalize_code_agent_data(fallback),
+                "error": None,
+            }
         return result
 
     data = normalize_code_agent_data(
@@ -1658,12 +1980,25 @@ def suggest_code_fix_with_agent(
     )
 
     if data is None:
+        fallback = build_client_repair_assurance_fallback(
+            scan_result,
+            execution_result,
+            agent_data,
+            repair_data,
+            source_review_data,
+            source_files,
+            "Repair Assurance Intelligence Analyst returned an invalid response.",
+        )
+        if fallback is not None:
+            return {
+                "success": True,
+                "data": normalize_code_agent_data(fallback),
+                "error": None,
+            }
         return {
             "success": False,
             "data": None,
-            "error": (
-                "Repair Assurance Intelligence Analyst returned an invalid response."
-            ),
+            "error": "Repair Assurance Intelligence Analyst returned an invalid response.",
         }
 
     return {
@@ -1671,5 +2006,3 @@ def suggest_code_fix_with_agent(
         "data": data,
         "error": None,
     }
-
-

@@ -524,3 +524,227 @@ def test_reporter_preserves_agent3_professional_contracts():
     assert assurance_json["shadow_validation_status"] == "NOT_RUN"
     assert assurance_json["auto_apply"] is False
 
+
+def test_repair_assurance_remote_failure_uses_contract_bound_client_fallback(monkeypatch, tmp_path):
+    client = load_client()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        "def divide(a, b):\n    return a / b\n",
+        encoding="utf-8",
+    )
+    scan_result = {
+        "project_type": "Python Project",
+        "project_path": str(project),
+        "source_review": {"source_files": ["app.py"]},
+    }
+    execution = passing_execution()
+    execution["success"] = False
+    execution["exit_code"] = 1
+    runtime = {
+        "root_cause_groups": [
+            {
+                "group_id": "RQI-001",
+                "evidence": [
+                    {
+                        "application_file": "app.py",
+                        "application_line": 2,
+                    }
+                ],
+            }
+        ]
+    }
+    repair = sample_repair_response()
+    review = source_review_data()
+
+    monkeypatch.setattr(
+        client,
+        "call_repair_assurance_agent",
+        lambda *args, **kwargs: {
+            "success": False,
+            "data": None,
+            "error": "RemoteDisconnected('Remote end closed connection without response')",
+        },
+    )
+
+    result = client.suggest_code_fix_with_agent(
+        "https://example.invalid",
+        scan_result,
+        execution,
+        runtime,
+        repair,
+        review,
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["status"] == "COMPLETED"
+    assert data["mode"] == "deterministic-client-fallback"
+    assert data["confidence"] == "MEDIUM"
+    assert data["auto_apply"] is False
+    assert data["guidance"][0]["repair_contract_ref"] == "STITCH-RC-001"
+    assert data["guidance"][0]["finding_refs"] == ["RQI-001"]
+    assert data["guidance"][0]["target_files"] == ["app.py"]
+    assert "divide" in data["guidance"][0]["target_symbols"]
+    assert data["guidance"][0]["suggested_patch"] is None
+    assert data["guidance"][0]["patch_validation_status"] == "NOT_GENERATED"
+    assert data["current_knowledge_required"] is False
+    assert "RemoteDisconnected" in data["llm_error"]
+    assert data["evidence_lineage"][0]["repair_contract_ref"] == "STITCH-RC-001"
+
+
+def test_repair_assurance_remote_failure_preserves_environment_no_code_change(monkeypatch, tmp_path):
+    client = load_client()
+    project = tmp_path / "maven"
+    source = project / "src" / "main" / "java" / "demo"
+    source.mkdir(parents=True)
+    java_path = source / "Calculator.java"
+    java_path.write_text(
+        "package demo; public class Calculator { int add(int a, int b) { return a + b; } }",
+        encoding="utf-8",
+    )
+    scan_result = {
+        "project_type": "Java Maven Project",
+        "project_path": str(project),
+        "source_review": {"source_files": ["src/main/java/demo/Calculator.java"]},
+    }
+    execution = passing_execution()
+    execution["command"] = "mvn test"
+    execution["success"] = False
+    execution["exit_code"] = None
+    execution["failure_type"] = "MAVEN_NOT_AVAILABLE"
+    repair = sample_repair_response()
+    repair["overall_priority"] = "P3"
+    repair["stitch_repair_contracts"] = [
+        {
+            "contract_id": "STITCH-RC-001",
+            "finding_refs": ["RQI-001"],
+            "title": "Maven environment blocker",
+            "priority": "P3",
+            "priority_reason": "Runtime validation could not start because Maven is unavailable.",
+            "repair_objective": "Restore the execution capability required to run mvn test.",
+            "repair_strategy": "Resolve only the environment or build-tool availability problem and do not modify application source code.",
+            "change_boundary": "Limit changes to build-tool availability, environment configuration, or Maven Wrapper files; keep application source code outside this repair.",
+            "protected_behavior": "Preserve application source and test behavior while restoring the environment needed to execute the existing test workflow.",
+            "side_effect_risk": "MEDIUM",
+            "verification": "Confirm mvn test can start and rerun Stitch QA to obtain runtime evidence.",
+            "done_condition": "The Maven command starts and runtime evidence is produced.",
+            "status": "PENDING_VERIFICATION",
+        }
+    ]
+
+    monkeypatch.setattr(
+        client,
+        "call_repair_assurance_agent",
+        lambda *args, **kwargs: {
+            "success": False,
+            "data": None,
+            "error": "remote service restarted",
+        },
+    )
+
+    result = client.suggest_code_fix_with_agent(
+        "https://example.invalid",
+        scan_result,
+        execution,
+        None,
+        repair,
+        source_review_data(),
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    item = data["guidance"][0]
+    assert data["mode"] == "deterministic-client-fallback"
+    assert data["status"] == "COMPLETED"
+    assert item["status"] == "NO_CODE_CHANGE_REQUIRED"
+    assert item["target_files"] == []
+    assert item["suggested_patch"] is None
+    assert item["patch_validation_status"] == "NOT_APPLICABLE"
+    assert "No application source change" in item["code_level_approach"]
+
+
+def test_repair_assurance_remote_failure_preserves_source_only_test_boundary(monkeypatch, tmp_path):
+    client = load_client()
+    project = tmp_path / "source-only"
+    project.mkdir()
+    (project / "app.py").write_text(
+        "def add(a, b):\n    return a + b\n",
+        encoding="utf-8",
+    )
+    scan_result = {
+        "project_type": "Python Project",
+        "project_path": str(project),
+        "source_review": {"source_files": ["app.py"]},
+    }
+    execution = passing_execution()
+    execution["success"] = False
+    execution["executed"] = False
+    execution["skipped"] = True
+    execution["exit_code"] = 0
+    execution["failure_type"] = "PYTHON_TESTS_NOT_FOUND"
+    review = source_review_data("MEDIUM")
+    review["findings"] = [
+        {
+            "id": "SQ-SRC-001",
+            "severity": "MEDIUM",
+            "title": "No automated tests detected",
+            "category": "testing",
+            "file_path": None,
+            "line": None,
+            "confidence": "HIGH",
+            "evidence": "No compatible automated tests were detected.",
+            "impact": "Runtime behavior lacks automated regression evidence.",
+            "recommendation": "Add focused automated tests.",
+        }
+    ]
+    review["findings_count"] = 1
+    repair = sample_repair_response()
+    repair["overall_priority"] = "P2"
+    repair["stitch_repair_contracts"] = [
+        {
+            "contract_id": "STITCH-RC-001",
+            "finding_refs": ["SQ-SRC-001"],
+            "title": "Missing automated tests",
+            "priority": "P2",
+            "priority_reason": "No automated tests were detected.",
+            "repair_objective": "Add focused automated tests without changing production behavior solely to satisfy the missing-tests finding.",
+            "repair_strategy": "Add focused tests using the detected project test conventions; keep production code unchanged unless a separate validated finding requires a source repair.",
+            "change_boundary": "Limit changes to test files and test configuration; do not modify application behavior unless a separate validated finding requires it.",
+            "protected_behavior": "Preserve existing application behavior while adding tests.",
+            "side_effect_risk": "MEDIUM",
+            "verification": "Confirm new tests are discovered and run all existing project checks.",
+            "done_condition": "Automated tests are discovered and execute successfully.",
+            "status": "PENDING_VERIFICATION",
+        }
+    ]
+
+    monkeypatch.setattr(
+        client,
+        "call_repair_assurance_agent",
+        lambda *args, **kwargs: {
+            "success": False,
+            "data": None,
+            "error": "remote inference unavailable",
+        },
+    )
+
+    result = client.suggest_code_fix_with_agent(
+        "https://example.invalid",
+        scan_result,
+        execution,
+        None,
+        repair,
+        review,
+    )
+
+    assert result["success"] is True
+    data = result["data"]
+    item = data["guidance"][0]
+    assert data["status"] == "COMPLETED"
+    assert data["mode"] == "deterministic-client-fallback"
+    assert item["target_files"] == []
+    assert item["suggested_patch"] is None
+    assert item["patch_validation_status"] == "NOT_GENERATED"
+    assert "Add focused automated tests" in item["code_level_approach"]
+    assert "production behavior unchanged" in item["code_level_approach"]
