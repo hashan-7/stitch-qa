@@ -53,6 +53,34 @@ def source_finding(finding_id="SRC-001", severity="MEDIUM"):
     }
 
 
+def missing_tests_finding():
+    return {
+        "id": "SQ-SRC-001",
+        "severity": "MEDIUM",
+        "title": "No automated tests detected",
+        "category": "TEST_COVERAGE",
+        "file_path": "Project",
+        "confidence": "HIGH",
+        "evidence": "No automated tests were detected for the discovered application source.",
+        "impact": "Application behavior lacks automated regression evidence.",
+        "recommendation": "Add focused automated tests for the discovered application behavior.",
+    }
+
+
+def maven_environment_group():
+    return {
+        "group_id": "RQI-001",
+        "title": "Maven Not Available",
+        "category": "ENVIRONMENT",
+        "failure_origin": "ENVIRONMENT",
+        "root_cause": "Maven is not installed or is unavailable in PATH.",
+        "runtime_impact": "The Maven test workflow did not start, so no runtime test result was established.",
+        "required_action": "Install Maven or provide a valid Maven Wrapper, then rerun Stitch QA.",
+        "affected_tests": [],
+        "evidence": [],
+    }
+
+
 def request_with_findings(include_source=True):
     source = {
         "status": "COMPLETED",
@@ -322,8 +350,147 @@ def test_environment_only_blocker_uses_deterministic_plan(monkeypatch):
     assert findings[0]["source"] == "execution"
     assert agent2.should_use_llm(findings) is False
     result = agent2.suggest_repair(request)
+    contract = result.stitch_repair_contracts[0]
     assert result.mode == "deterministic-validated"
     assert result.overall_priority == "P1"
+    assert "critical" not in contract.priority_reason.lower()
+    assert "application source code" in contract.repair_strategy.lower()
+    assert "application source code" in contract.change_boundary.lower()
+    assert "preserve application source and test behavior" in contract.protected_behavior.lower()
+    assert "mvn test" in contract.verification.lower()
+
+
+def test_agent1_environment_group_normalizes_ungrounded_ai_semantics():
+    request = agent2.RepairRequest.model_validate(
+        {
+            "project_type": "Java Maven Project",
+            "command": "mvn test",
+            "success": False,
+            "exit_code": None,
+            "runtime_analysis": {
+                "test_result": "NOT_RUN",
+                "release_gate": "REVIEW_REQUIRED",
+                "runtime_risk_level": "UNKNOWN",
+                "diagnosis_confidence": "LOW",
+                "evidence_quality": "NONE",
+                "root_cause_groups": [maven_environment_group()],
+            },
+            "runtime_evidence": {
+                "test_result": "NOT_RUN",
+                "failures": [],
+            },
+        }
+    )
+    findings = agent2.collect_locked_findings(request)
+    payload = valid_plan(refs=["RQI-001"], priority="P1")
+    payload["x"][0]["w"] = "P1: Critical"
+    payload["x"][0]["o"] = "Install Maven or provide a valid Maven Wrapper, then rerun Stitch QA."
+    payload["x"][0]["s"] = "Install Maven or provide a valid Maven Wrapper, then rerun Stitch QA."
+    payload["x"][0]["b"] = "Install Maven or provide a valid Maven Wrapper"
+    payload["x"][0]["q"] = "Preserve currently successful runtime behavior and keep valid inputs unchanged."
+    payload["x"][0]["r"] = "M"
+    payload["x"][0]["v"] = "Resolve the execution issue, rerun the command, then run regression checks."
+
+    plan = agent2.validate_plan(
+        agent2.parse_model_output(json.dumps(payload)),
+        request,
+        findings,
+    )
+    merged = agent2.merge_model_plan(plan, request, findings)
+    contract = merged["stitch_repair_contracts"][0]
+
+    assert contract["priority"] == "P1"
+    assert "critical" not in contract["priority_reason"].lower()
+    assert "runtime validation could not start" in contract["priority_reason"].lower()
+    assert "application source code" in contract["repair_strategy"].lower()
+    assert "application source code" in contract["change_boundary"].lower()
+    assert "preserve application source and test behavior" in contract["protected_behavior"].lower()
+    assert "mvn test" in contract["verification"].lower()
+    assert "obtains runtime evidence" in contract["done_condition"].lower()
+    assert merged["current_knowledge_required"] is False
+
+
+def test_missing_tests_contract_is_bounded_and_uses_medium_priority_floor():
+    request = agent2.RepairRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "success": False,
+            "exit_code": 0,
+            "failure_type": "PYTHON_TESTS_NOT_FOUND",
+            "help_message": "No pytest-compatible test files were detected.",
+            "source_review": {
+                "status": "COMPLETED",
+                "risk_level": "MEDIUM",
+                "release_recommendation": "REVIEW_REQUIRED",
+                "findings": [missing_tests_finding()],
+            },
+        }
+    )
+    findings = agent2.collect_locked_findings(request)
+    payload = valid_plan(refs=["SQ-SRC-001"], priority="P3")
+    payload["x"][0]["w"] = "No automated tests detected"
+    payload["x"][0]["o"] = "Add focused automated tests for critical flows and error paths."
+    payload["x"][0]["s"] = "The entire source code repository must be reviewed and updated to include automated tests."
+    payload["x"][0]["b"] = "Test suite, validation logic, error handling, and security checks"
+    payload["x"][0]["q"] = "All automated test functionality must remain intact and unchanged"
+    payload["x"][0]["r"] = "M"
+    payload["x"][0]["v"] = "Confirm the testing deficiency, then perform regression verification through test execution."
+
+    plan = agent2.validate_plan(
+        agent2.parse_model_output(json.dumps(payload)),
+        request,
+        findings,
+    )
+    merged = agent2.merge_model_plan(plan, request, findings)
+    contract = merged["stitch_repair_contracts"][0]
+
+    assert plan.contracts[0].priority == "P2"
+    assert plan.overall_priority == "P2"
+    assert merged["overall_priority"] == "P2"
+    assert contract["priority"] == "P2"
+    assert "entire source code repository" not in contract["repair_strategy"].lower()
+    assert "focused tests" in contract["repair_strategy"].lower()
+    assert "production code unchanged" in contract["repair_strategy"].lower()
+    assert "test files and test configuration" in contract["change_boundary"].lower()
+    assert "do not modify application behavior" in contract["change_boundary"].lower()
+    assert "preserve existing application behavior" in contract["protected_behavior"].lower()
+    assert "new tests are discovered" in contract["verification"].lower()
+    assert "execute successfully" in contract["done_condition"].lower()
+    assert merged["current_knowledge_required"] is False
+
+
+def test_missing_tests_fallback_uses_same_safe_contract_semantics():
+    request = agent2.RepairRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "success": False,
+            "exit_code": 0,
+        }
+    )
+    findings = [
+        {
+            "ref": "SQ-SRC-001",
+            "source": "source",
+            "severity": "MEDIUM",
+            "title": "No automated tests detected",
+            "category": "TEST_COVERAGE",
+            "root_cause": "No automated tests were detected for the application source.",
+            "impact": "Application behavior lacks automated regression evidence.",
+            "recommendation": "Add focused automated tests.",
+            "locations": [],
+            "evidence": [],
+        }
+    ]
+    result = agent2.build_fallback_plan(request, findings)
+    contract = result["stitch_repair_contracts"][0]
+
+    assert result["overall_priority"] == "P2"
+    assert contract["priority"] == "P2"
+    assert "production code unchanged" in contract["repair_strategy"].lower()
+    assert "test files and test configuration" in contract["change_boundary"].lower()
+    assert "preserve existing application behavior" in contract["protected_behavior"].lower()
 
 
 def test_overflow_findings_are_not_silently_dropped():
@@ -698,3 +865,7 @@ def test_prompt_distinguishes_repair_risk_from_defect_severity():
     assert "must include both targeted confirmation" in system_prompt
     assert "risk introduced by implementing the repair" in system_prompt
     assert "not the severity of the original defect" in system_prompt
+    assert "environment or build-tool blockers" in system_prompt
+    assert "keep application source code outside the repair boundary" in system_prompt
+    assert "for missing-tests findings" in system_prompt
+    assert "do not propose production-code changes solely to create tests" in system_prompt

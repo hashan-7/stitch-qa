@@ -907,15 +907,11 @@ def contract_priority_floor(request, contract, findings):
     ):
         return "P1"
 
-    if any(
-        finding.get("source") == "source"
-        and normalize_risk(finding.get("severity")) == "CRITICAL"
-        for finding in selected
-    ):
-        return "P1"
-
-    return "P3"
-
+    return max(
+        (severity_priority(finding.get("severity")) for finding in selected),
+        key=lambda item: PRIORITY_ORDER[item],
+        default="P3",
+    )
 
 def deterministic_confidence(request, findings):
     analysis = request.runtime_analysis or {}
@@ -944,6 +940,28 @@ def fallback_contract(finding, index, request):
 
     if finding.get("source") == "execution":
         priority = "P1"
+
+    specialized = build_specialized_contract_semantics(
+        [finding],
+        request,
+        priority,
+    )
+    if specialized:
+        return {
+            "contract_id": f"STITCH-RC-{index:03d}",
+            "finding_refs": [finding["ref"]],
+            "title": clean_text(finding.get("title"), 140),
+            "priority": priority,
+            "priority_reason": specialized["priority_reason"],
+            "repair_objective": specialized["repair_objective"],
+            "repair_strategy": specialized["repair_strategy"],
+            "change_boundary": specialized["change_boundary"],
+            "protected_behavior": specialized["protected_behavior"],
+            "side_effect_risk": specialized["side_effect_risk"],
+            "verification": specialized["verification"],
+            "done_condition": specialized["done_condition"],
+            "status": "PENDING_VERIFICATION",
+        }
 
     objective = (
         finding.get("recommendation")
@@ -992,7 +1010,6 @@ def fallback_contract(finding, index, request):
         "status": "PENDING_VERIFICATION",
     }
 
-
 def finding_may_need_current_knowledge(finding):
     text = " ".join(
         clean_text(finding.get(key), 500).lower()
@@ -1018,6 +1035,132 @@ def finding_may_need_current_knowledge(finding):
         "repository",
     )
     return any(indicator in text for indicator in indicators)
+
+
+def finding_semantic_text(finding):
+    return " ".join(
+        clean_text(finding.get(key), 500).lower()
+        for key in (
+            "title",
+            "category",
+            "root_cause",
+            "impact",
+        )
+    )
+
+
+def is_environment_blocker_finding(finding):
+    source = str(finding.get("source") or "").lower()
+    category = str(finding.get("category") or "").upper()
+    return source == "execution" or category == "ENVIRONMENT"
+
+
+def is_missing_tests_finding(finding):
+    if str(finding.get("source") or "").lower() != "source":
+        return False
+    text = finding_semantic_text(finding)
+    indicators = (
+        "no automated tests",
+        "no automated test",
+        "no tests detected",
+        "no test files detected",
+        "no test files were detected",
+        "missing automated tests",
+        "automated tests not detected",
+    )
+    return any(indicator in text for indicator in indicators)
+
+
+def findings_are_environment_blockers(findings):
+    return bool(findings) and all(
+        is_environment_blocker_finding(finding)
+        for finding in findings
+    )
+
+
+def findings_are_missing_tests(findings):
+    return bool(findings) and all(
+        is_missing_tests_finding(finding)
+        for finding in findings
+    )
+
+
+def build_specialized_contract_semantics(findings, request, priority):
+    if findings_are_environment_blockers(findings):
+        recommendation = next(
+            (
+                clean_text(finding.get("recommendation"), 220)
+                for finding in findings
+                if clean_text(finding.get("recommendation"), 220)
+            ),
+            "Restore the required build or test execution environment.",
+        )
+        command = clean_text(request.command, 160) or "the validated test command"
+        return {
+            "priority_reason": clean_text(
+                f"{priority}: runtime validation could not start because the required execution environment or build tooling was unavailable; resolve the blocker before runtime QA can be completed.",
+                220,
+            ),
+            "repair_objective": clean_text(
+                f"Restore the execution capability required to run {command} and produce runtime test evidence.",
+                260,
+            ),
+            "repair_strategy": clean_text(
+                f"Resolve only the execution-environment blocker: {recommendation} Do not modify application source code to solve an environment or build-tool availability problem.",
+                320,
+            ),
+            "change_boundary": (
+                "Limit changes to build-tool availability, environment configuration, or project wrapper files required to start the validated command; keep application source code outside this repair."
+            ),
+            "protected_behavior": (
+                "Preserve application source and test behavior; this repair should only restore the environment needed to execute the existing test workflow."
+            ),
+            "side_effect_risk": "MEDIUM",
+            "verification": clean_text(
+                f"Confirm {command} can start, rerun Stitch QA to obtain runtime evidence, then use the resulting complete test run as regression evidence and separate any application failures from this environment blocker.",
+                300,
+            ),
+            "done_condition": (
+                "The validated test command starts successfully and Stitch QA obtains runtime evidence; any subsequent application failure is handled as a separate evidence-backed finding."
+            ),
+        }
+
+    if findings_are_missing_tests(findings):
+        severity = highest_risk(
+            *(finding.get("severity") for finding in findings)
+        )
+        severity_text = (
+            severity
+            if severity not in {"UNKNOWN", "NONE"}
+            else "confirmed"
+        )
+        return {
+            "priority_reason": clean_text(
+                f"{priority}: the {severity_text} source-review finding confirms that automated tests are absent, leaving application behavior without automated regression evidence.",
+                220,
+            ),
+            "repair_objective": (
+                "Add a focused automated test suite for the discovered application source without changing production behavior solely to satisfy the missing-tests finding."
+            ),
+            "repair_strategy": (
+                "Add focused tests using the detected project test conventions, covering core behavior and evidence-backed edge or error paths; keep production code unchanged unless a separate validated finding requires a source repair."
+            ),
+            "change_boundary": (
+                "Limit changes to test files and test configuration needed for discovery and execution; do not modify application behavior unless a separate validated finding requires it."
+            ),
+            "protected_behavior": (
+                "Preserve existing application behavior while adding tests; do not introduce production-code changes solely to resolve the missing-tests finding."
+            ),
+            "side_effect_risk": "MEDIUM",
+            "verification": (
+                "Confirm the new tests are discovered, execute them, then run all existing project checks and verify the test-suite changes introduce no regression."
+            ),
+            "done_condition": (
+                "Automated tests are discovered and execute successfully, and existing application behavior remains unchanged unless a separate validated finding requires a source repair."
+            ),
+        }
+
+    return None
 
 
 def build_fallback_plan(request, findings, mode="deterministic-fallback", llm_error=None):
@@ -1194,6 +1337,8 @@ def build_messages(request, findings):
         "Protected behavior must name working behavior that should remain unchanged and must never be None, N/A, or an impact statement. "
         "Verification must include both targeted confirmation of the referenced finding and broader regression verification. "
         "Side-effect risk means risk introduced by implementing the repair, not the severity of the original defect; narrow local validation changes are normally LOW or MEDIUM unless the evidence shows broader coupling. "
+        "For environment or build-tool blockers, do not call the underlying application defect critical unless the locked evidence says CRITICAL, and keep application source code outside the repair boundary unless separate source evidence requires a change. "
+        "For missing-tests findings, keep the repair boundary to test files and test configuration needed for discovery and execution; do not propose production-code changes solely to create tests. "
         "Do not generate patches, code, commits, commands that modify the project, or automatic fixes. "
         "If a version, vendor behavior, dependency compatibility, deprecation, or security advisory needs up-to-date external documentation, set current_knowledge_required=true and explain why; do not invent the missing current fact. "
         "Return only JSON matching the required schema. "
@@ -1632,7 +1777,15 @@ def is_narrow_repair(selected, boundary):
 
 def normalize_contract_semantics(contract, request, findings):
     selected = selected_findings_for_contract(contract, findings)
+    specialized = build_specialized_contract_semantics(
+        selected,
+        request,
+        contract.priority,
+    )
+    if specialized:
+        return specialized
 
+    priority_reason = clean_text(contract.priority_reason, 220)
     objective = clean_text(contract.repair_objective, 260)
     expected_values = [
         item["expected"]
@@ -1692,14 +1845,17 @@ def normalize_contract_semantics(contract, request, findings):
         repair_risk = "MEDIUM"
 
     return {
+        "priority_reason": priority_reason,
         "repair_objective": objective,
         "repair_strategy": strategy,
         "change_boundary": boundary,
         "protected_behavior": protected,
         "side_effect_risk": repair_risk,
         "verification": verification,
+        "done_condition": (
+            "The referenced findings no longer reproduce, the targeted confirmation succeeds, and the stated regression verification introduces no new failure."
+        ),
     }
-
 
 def validate_plan(plan, request, findings):
     finding_refs = {finding["ref"] for finding in findings}
@@ -1804,16 +1960,14 @@ def merge_model_plan(plan, request, findings, overflow_findings=None):
                     140,
                 ),
                 "priority": item.priority,
-                "priority_reason": clean_text(item.priority_reason, 220),
+                "priority_reason": semantic["priority_reason"],
                 "repair_objective": semantic["repair_objective"],
                 "repair_strategy": semantic["repair_strategy"],
                 "change_boundary": semantic["change_boundary"],
                 "protected_behavior": semantic["protected_behavior"],
                 "side_effect_risk": semantic["side_effect_risk"],
                 "verification": semantic["verification"],
-                "done_condition": (
-                    "The referenced findings no longer reproduce, the targeted confirmation succeeds, and the stated regression verification introduces no new failure."
-                ),
+                "done_condition": semantic["done_condition"],
                 "status": "PENDING_VERIFICATION",
             }
         )
