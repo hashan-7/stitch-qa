@@ -31,7 +31,7 @@ SOURCE_COMPLETE_STATUSES = {
     "PARTIAL",
 }
 
-REPORT_SCHEMA_VERSION = "3.1"
+REPORT_SCHEMA_VERSION = "3.2"
 TOOL_VERSION = "v2.2-development"
 
 SEVERITY_DISPLAY_ORDER = [
@@ -797,80 +797,70 @@ def build_log_agent_json(
     }
 
 
-def build_repair_agent_json(
-    repair_data,
-):
+def build_repair_agent_json(repair_data):
+    repair_data = repair_data or {}
+    contracts = []
+
+    for item in format_list(repair_data.get("stitch_repair_contracts", [])):
+        if not isinstance(item, dict):
+            continue
+        contracts.append(
+            {
+                "contract_id": safe_value(item.get("contract_id")),
+                "finding_refs": format_list(item.get("finding_refs", [])),
+                "title": safe_value(item.get("title")),
+                "priority": safe_value(item.get("priority"), "P3"),
+                "priority_reason": safe_value(item.get("priority_reason")),
+                "repair_objective": safe_value(item.get("repair_objective")),
+                "repair_strategy": safe_value(item.get("repair_strategy")),
+                "change_boundary": safe_value(item.get("change_boundary")),
+                "protected_behavior": safe_value(item.get("protected_behavior")),
+                "side_effect_risk": safe_value(item.get("side_effect_risk"), "UNKNOWN"),
+                "verification": safe_value(item.get("verification")),
+                "done_condition": safe_value(item.get("done_condition")),
+                "status": safe_value(item.get("status"), "PENDING_VERIFICATION"),
+            }
+        )
+
+    repair_risk = safe_value(
+        repair_data.get("repair_risk_level") or repair_data.get("risk_level"),
+        "UNKNOWN",
+    )
+
     return {
-        "agent": safe_value(
-            repair_data.get(
-                "agent"
-            )
-            if repair_data
+        "agent_id": safe_value(repair_data.get("agent_id"), "defect-resolution-analyst"),
+        "display_name": safe_value(
+            repair_data.get("display_name"),
+            "Defect Resolution Intelligence Analyst",
+        ),
+        "agent_version": safe_value(repair_data.get("agent_version"), "2.0"),
+        "agent": safe_value(repair_data.get("agent"), "repair-agent"),
+        "mode": safe_value(repair_data.get("mode")),
+        "model": safe_value(repair_data.get("model")),
+        "status": safe_value(repair_data.get("status")),
+        "overall_priority": safe_value(repair_data.get("overall_priority"), "NONE"),
+        "confidence": safe_value(repair_data.get("confidence"), "LOW"),
+        "repair_risk_level": repair_risk,
+        "risk_level": repair_risk,
+        "auto_apply": bool(repair_data.get("auto_apply", False)),
+        "summary": safe_value(repair_data.get("summary")),
+        "stitch_repair_contracts": contracts,
+        "current_knowledge_required": bool(
+            repair_data.get("current_knowledge_required", False)
+        ),
+        "current_knowledge_reason": safe_value(
+            repair_data.get("current_knowledge_reason")
+        ),
+        "suggestions": format_list(repair_data.get("suggestions", [])),
+        "next_action": safe_value(repair_data.get("next_action")),
+        "warnings": format_list(repair_data.get("warnings", [])),
+        "limitations": format_list(repair_data.get("limitations", [])),
+        "llm_metrics": (
+            repair_data.get("llm_metrics")
+            if isinstance(repair_data.get("llm_metrics"), dict)
             else None
         ),
-        "mode": safe_value(
-            repair_data.get(
-                "mode"
-            )
-            if repair_data
-            else None
-        ),
-        "status": safe_value(
-            repair_data.get(
-                "status"
-            )
-            if repair_data
-            else None
-        ),
-        "risk_level": safe_value(
-            repair_data.get(
-                "risk_level"
-            )
-            if repair_data
-            else None
-        ),
-        "auto_apply": safe_value(
-            repair_data.get(
-                "auto_apply"
-            )
-            if repair_data
-            else None
-        ),
-        "summary": safe_value(
-            repair_data.get(
-                "summary"
-            )
-            if repair_data
-            else None
-        ),
-        "suggestions": format_list(
-            repair_data.get(
-                "suggestions"
-            )
-            if repair_data
-            else []
-        ),
-        "next_action": safe_value(
-            repair_data.get(
-                "next_action"
-            )
-            if repair_data
-            else None
-        ),
-        "warnings": format_list(
-            repair_data.get(
-                "warnings"
-            )
-            if repair_data
-            else []
-        ),
-        "llm_error": safe_value(
-            repair_data.get(
-                "llm_error"
-            )
-            if repair_data
-            else None
-        ),
+        "llm_error": safe_value(repair_data.get("llm_error")),
     }
 
 
@@ -1194,32 +1184,11 @@ def build_qa_decision(
         "code_repair_guidance"
     ]
 
-    requested_agent_unavailable = (
-        (
-            workflow_context.get(
-                "analyze_requested"
-            )
-            and is_unavailable_status(
-                log_status
-            )
-        )
-        or (
-            workflow_context.get(
-                "repair_requested"
-            )
-            and is_unavailable_status(
-                repair_status
-            )
-        )
-        or (
-            workflow_context.get(
-                "code_fix_requested"
-            )
-            and is_unavailable_status(
-                code_status
-            )
-        )
+    requested_evidence_agent_unavailable = (
+        workflow_context.get("analyze_requested")
+        and is_unavailable_status(log_status)
     )
+
 
     agent_release_gate = normalize_status(
         agent_data.get(
@@ -1251,20 +1220,7 @@ def build_qa_decision(
             "risk_level"
         )
     )
-    repair_risk = normalize_risk(
-        repair_data.get(
-            "risk_level"
-        )
-        if repair_data
-        else None
-    )
-    code_risk = normalize_risk(
-        code_data.get(
-            "risk_level"
-        )
-        if code_data
-        else None
-    )
+
 
     execution_risk = (
         "HIGH"
@@ -1289,11 +1245,10 @@ def build_qa_decision(
 
     combined_risk = highest_risk(
         source_risk,
-        repair_risk,
-        code_risk,
         execution_risk,
         log_risk,
     )
+
 
     reasons = []
 
@@ -1345,7 +1300,7 @@ def build_qa_decision(
         "repair_requested"
     ):
         reasons.append(
-            f"Agent 2 repair guidance status was {repair_status}."
+            f"Defect Resolution Intelligence Analyst status was {repair_status}."
         )
 
     if workflow_context.get(
@@ -1374,7 +1329,7 @@ def build_qa_decision(
         ci_exit_code = 1
     elif (
         source_unavailable
-        or requested_agent_unavailable
+        or requested_evidence_agent_unavailable
         or execution_incomplete
     ):
         status = "QA_INCOMPLETE"
@@ -1457,7 +1412,7 @@ def build_qa_decision(
     if (
         source_status
         == "PARTIAL"
-        or requested_agent_unavailable
+        or requested_evidence_agent_unavailable
     ):
         completeness = "PARTIAL"
     elif (
@@ -1917,7 +1872,7 @@ def build_report_limitations(
             "Runtime Quality Intelligence analysis"
         ),
         "repair_guidance": (
-            "Agent 2 repair guidance"
+            "Defect Resolution Intelligence Analyst"
         ),
         "code_repair_guidance": (
             "Agent 3 runtime code-repair guidance"
@@ -1971,6 +1926,13 @@ def build_report_limitations(
                 )
             )
 
+    for item in repair_agent_json.get(
+        "limitations",
+        [],
+    ):
+        if item and item not in limitations:
+            limitations.append(str(item))
+
     llm_errors = [
         log_agent_json.get(
             "llm_error"
@@ -2006,38 +1968,71 @@ def build_next_actions(
     source_review_json,
     execution_result,
     log_agent_json=None,
+    repair_agent_json=None,
 ):
     actions = []
-    log_agent_json = (
-        log_agent_json
-        or {}
-    )
+    log_agent_json = log_agent_json or {}
+    repair_agent_json = repair_agent_json or {}
     status = normalize_status(
-        qa_decision.get(
-            "status"
-        ),
+        qa_decision.get("status"),
         "QA_INCOMPLETE",
     )
     source_status = normalize_status(
-        source_review_json.get(
-            "status"
-        ),
+        source_review_json.get("status"),
         "NOT_RUN",
     )
-    runtime_evidence = (
-        execution_result.get(
-            "runtime_evidence"
-        )
-        or {}
-    )
+    runtime_evidence = execution_result.get("runtime_evidence") or {}
     test_result = normalize_status(
-        runtime_evidence.get(
-            "test_result"
-        ),
+        runtime_evidence.get("test_result"),
         "INCONCLUSIVE",
     )
 
-    if test_result == "FAIL":
+    contracts = repair_agent_json.get("stitch_repair_contracts", [])
+    covered_findings = set()
+
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        covered_findings.update(
+            str(ref)
+            for ref in contract.get("finding_refs", [])
+            if ref
+        )
+        strategy = safe_value(contract.get("repair_strategy"))
+        if not strategy:
+            continue
+        actions.append(
+            {
+                "priority": safe_value(contract.get("priority"), "P3"),
+                "action": str(strategy),
+                "source": "defect-resolution-analyst",
+                "contract_id": safe_value(contract.get("contract_id")),
+                "finding_refs": format_list(contract.get("finding_refs", [])),
+                "done_condition": safe_value(contract.get("done_condition")),
+            }
+        )
+
+    if repair_agent_json.get("current_knowledge_required"):
+        actions.append(
+            {
+                "priority": safe_value(
+                    repair_agent_json.get("overall_priority"),
+                    "P2",
+                ),
+                "action": (
+                    "Verify the required current external documentation before implementing the affected repair plan. "
+                    + str(
+                        safe_value(
+                            repair_agent_json.get("current_knowledge_reason"),
+                            "The repair depends on current external behavior or compatibility information.",
+                        )
+                    )
+                ),
+                "source": "defect-resolution-analyst",
+            }
+        )
+
+    if test_result == "FAIL" and not contracts:
         actions.append(
             {
                 "priority": "P1",
@@ -2047,48 +2042,29 @@ def build_next_actions(
             }
         )
 
-    for action_text in log_agent_json.get(
-        "required_actions",
-        [],
-    ):
-        action = {
-            "priority": (
-                "P1"
-                if status
-                in {
-                    "BLOCK_RELEASE",
-                    "FAIL",
-                }
-                else "P2"
-            ),
-            "action": str(
-                action_text
-            ),
-            "source": (
-                "runtime-quality-analyst"
-            ),
-        }
+    if not contracts:
+        for action_text in log_agent_json.get("required_actions", []):
+            action = {
+                "priority": (
+                    "P1"
+                    if status in {"BLOCK_RELEASE", "FAIL"}
+                    else "P2"
+                ),
+                "action": str(action_text),
+                "source": "runtime-quality-analyst",
+            }
+            if action not in actions:
+                actions.append(action)
 
-        if action not in actions:
-            actions.append(
-                action
-            )
-
-    if status in {
-        "BLOCK_RELEASE",
-        "FAIL",
-    }:
+    if status in {"BLOCK_RELEASE", "FAIL"}:
         action = {
             "priority": "P1",
             "action": (
                 "Keep the release blocked until all confirmed release-blocking conditions are resolved."
             ),
         }
-
         if action not in actions:
-            actions.append(
-                action
-            )
+            actions.append(action)
 
     if source_status == "UNAVAILABLE":
         actions.append(
@@ -2100,9 +2076,7 @@ def build_next_actions(
             }
         )
 
-    if not static_map.get(
-        "has_tests"
-    ):
+    if not static_map.get("has_tests"):
         actions.append(
             {
                 "priority": "P2",
@@ -2112,30 +2086,17 @@ def build_next_actions(
             }
         )
 
-    for finding in normalize_findings(
-        source_review_json.get(
-            "findings",
-            [],
-        )
-    ):
-        recommendation = safe_value(
-            finding.get(
-                "recommendation"
-            )
-        )
+    for finding in normalize_findings(source_review_json.get("findings", [])):
+        finding_id = safe_value(finding.get("id"))
+        if finding_id and str(finding_id) in covered_findings:
+            continue
 
+        recommendation = safe_value(finding.get("recommendation"))
         if not recommendation:
             continue
 
-        severity = finding.get(
-            "severity",
-            "UNKNOWN",
-        )
-
-        if severity in {
-            "CRITICAL",
-            "HIGH",
-        }:
+        severity = finding.get("severity", "UNKNOWN")
+        if severity in {"CRITICAL", "HIGH"}:
             priority = "P1"
         elif severity == "MEDIUM":
             priority = "P2"
@@ -2144,52 +2105,29 @@ def build_next_actions(
 
         action = {
             "priority": priority,
-            "action": str(
-                recommendation
-            ),
-            "finding_id": safe_value(
-                finding.get(
-                    "id"
-                )
-            ),
+            "action": str(recommendation),
+            "finding_id": finding_id,
             "severity": severity,
         }
-
         if action not in actions:
-            actions.append(
-                action
-            )
+            actions.append(action)
 
     if not actions:
         actions.append(
             {
                 "priority": "P3",
                 "action": (
-                    "Retain the QA evidence and continue with the normal project-level release review."
+                    "Retain the available QA evidence and continue the normal release workflow."
                 ),
             }
         )
 
-    priority_order = {
-        "P1": 1,
-        "P2": 2,
-        "P3": 3,
-    }
-
+    priority_order = {"P1": 0, "P2": 1, "P3": 2}
     return sorted(
         actions,
-        key=lambda item: (
-            priority_order.get(
-                item.get(
-                    "priority"
-                ),
-                99,
-            ),
-            str(
-                item.get(
-                    "action"
-                )
-            ),
+        key=lambda item: priority_order.get(
+            str(item.get("priority") or "P3").upper(),
+            3,
         ),
     )
 
@@ -2409,7 +2347,7 @@ def build_qa_decision_markdown(
                 ),
             ],
             [
-                "Agent 2 Repair Guidance",
+                "Defect Resolution Intelligence Analyst",
                 workflow_status.get(
                     "repair_guidance",
                     "NOT_REQUESTED",
@@ -2725,28 +2663,59 @@ def build_agent_details_markdown(
             f"{log_agent_json.get('llm_error')}\n\n"
         )
 
+    repair_contract_sections = []
+    for contract in repair_agent_json.get("stitch_repair_contracts", []):
+        repair_contract_sections.append(
+            f"#### {safe_value(contract.get('contract_id'), 'Repair Contract')} — "
+            f"{safe_value(contract.get('title'), 'Repair target')}\n\n"
+            f"- Findings: {format_inline_list(contract.get('finding_refs', []))}\n"
+            f"- Priority: {safe_value(contract.get('priority'), 'P3')}\n"
+            f"- Side-effect Risk: {safe_value(contract.get('side_effect_risk'), 'UNKNOWN')}\n"
+            f"- Status: {safe_value(contract.get('status'), 'PENDING_VERIFICATION')}\n\n"
+            f"**Why This Priority**\n\n{safe_value(contract.get('priority_reason'), 'Not available')}\n\n"
+            f"**Repair Objective**\n\n{safe_value(contract.get('repair_objective'), 'Not available')}\n\n"
+            f"**Repair Strategy**\n\n{safe_value(contract.get('repair_strategy'), 'Not available')}\n\n"
+            f"**Change Boundary**\n\n{safe_value(contract.get('change_boundary'), 'Not available')}\n\n"
+            f"**Protected Behavior**\n\n{safe_value(contract.get('protected_behavior'), 'Not available')}\n\n"
+            f"**Verification**\n\n{safe_value(contract.get('verification'), 'Not available')}\n\n"
+            f"**Done Condition**\n\n{safe_value(contract.get('done_condition'), 'Not available')}"
+        )
+
+    repair_contracts_text = (
+        "\n\n".join(repair_contract_sections)
+        if repair_contract_sections
+        else "No Stitch Repair Contracts were generated."
+    )
+
     repair_section = (
-        "## Agent 2 Repair Guidance\n\n"
-        f"- Agent: {safe_value(repair_agent_json.get('agent'), 'Not available')}\n"
+        "## Defect Resolution Intelligence Analyst\n\n"
+        f"- Agent ID: {safe_value(repair_agent_json.get('agent_id'), 'defect-resolution-analyst')}\n"
+        f"- Version: {safe_value(repair_agent_json.get('agent_version'), '2.0')}\n"
         f"- Mode: {safe_value(repair_agent_json.get('mode'), 'Not available')}\n"
+        f"- Model: {safe_value(repair_agent_json.get('model'), 'Not used')}\n"
         f"- Status: {safe_value(repair_agent_json.get('status'), 'Not requested')}\n"
-        f"- Risk Level: {safe_value(repair_agent_json.get('risk_level'), 'UNKNOWN')}\n"
+        f"- Overall Repair Priority: {safe_value(repair_agent_json.get('overall_priority'), 'NONE')}\n"
+        f"- Planning Confidence: {safe_value(repair_agent_json.get('confidence'), 'LOW')}\n"
+        f"- Repair Side-effect Risk: {safe_value(repair_agent_json.get('repair_risk_level'), 'UNKNOWN')}\n"
         f"- Auto Apply: {safe_value(repair_agent_json.get('auto_apply'), False)}\n\n"
         "### Summary\n\n"
         f"{safe_value(repair_agent_json.get('summary'), 'Not requested')}\n\n"
-        "### Suggestions\n\n"
-        f"{format_markdown_list(repair_agent_json.get('suggestions', []))}\n\n"
+        "### Stitch Repair Contracts\n\n"
+        f"{repair_contracts_text}\n\n"
+        "### Current Knowledge Check\n\n"
+        f"- Required: {bool(repair_agent_json.get('current_knowledge_required', False))}\n"
+        f"- Reason: {safe_value(repair_agent_json.get('current_knowledge_reason'), 'Not required')}\n\n"
         "### Next Action\n\n"
         f"{safe_value(repair_agent_json.get('next_action'), 'Not available')}\n\n"
         "### Warnings\n\n"
         f"{format_markdown_list(repair_agent_json.get('warnings', []))}\n\n"
+        "### Limitations\n\n"
+        f"{format_markdown_list(repair_agent_json.get('limitations', []))}\n\n"
     )
 
-    if repair_agent_json.get(
-        "llm_error"
-    ):
+    if repair_agent_json.get("llm_error"):
         repair_section += (
-            "### Agent 2 LLM Error\n\n"
+            "### Agent 2 LLM Fallback Reason\n\n"
             f"{repair_agent_json.get('llm_error')}\n\n"
         )
 
@@ -3013,6 +2982,7 @@ def generate_report(
         source_review_json,
         execution_result,
         log_agent_json,
+        repair_agent_json,
     )
 
     runtime_evidence = (
@@ -3383,3 +3353,4 @@ def generate_report(
     )
 
     return md_report_path
+

@@ -455,13 +455,19 @@ def print_log_agent_result(
         )
 
 
-def print_repair_agent_result(
-    repair_data,
-):
+def print_repair_agent_result(repair_data):
     console.print(
         "\n[bold magenta]"
-        "Agent 2 Repair Guidance"
+        "Defect Resolution Intelligence Analyst"
         "[/bold magenta]"
+    )
+    console.print(
+        f"[bold]Agent ID:[/bold] "
+        f"{repair_data.get('agent_id', 'defect-resolution-analyst')}"
+    )
+    console.print(
+        f"[bold]Version:[/bold] "
+        f"{repair_data.get('agent_version', '2.0')}"
     )
     console.print(
         f"[bold]Status:[/bold] "
@@ -472,63 +478,107 @@ def print_repair_agent_result(
         f"{repair_data.get('mode')}"
     )
     console.print(
-        f"[bold]Risk Level:[/bold] "
-        f"{repair_data.get('risk_level')}"
+        f"[bold]Model:[/bold] "
+        f"{repair_data.get('model') or 'Not used'}"
+    )
+    console.print(
+        f"[bold]Overall Repair Priority:[/bold] "
+        f"{repair_data.get('overall_priority', 'NONE')}"
+    )
+    console.print(
+        f"[bold]Planning Confidence:[/bold] "
+        f"{repair_data.get('confidence', 'LOW')}"
+    )
+    console.print(
+        f"[bold]Repair Side-effect Risk:[/bold] "
+        f"{repair_data.get('repair_risk_level', 'UNKNOWN')}"
     )
     console.print(
         f"[bold]Auto Apply:[/bold] "
-        f"{repair_data.get('auto_apply')}"
+        f"{repair_data.get('auto_apply', False)}"
     )
     console.print(
         f"[bold]Summary:[/bold] "
         f"{repair_data.get('summary')}"
     )
 
-    suggestions = repair_data.get(
-        "suggestions",
-        [],
-    )
-
-    if suggestions:
+    contracts = repair_data.get("stitch_repair_contracts", [])
+    if contracts:
         console.print(
             "\n[bold cyan]"
-            "Repair Suggestions"
+            "Stitch Repair Contracts"
             "[/bold cyan]"
         )
-        for suggestion in suggestions:
+
+        for contract in contracts:
             console.print(
-                f"- {suggestion}"
+                f"\n[bold]{contract.get('contract_id')} — "
+                f"{contract.get('title')}[/bold]"
             )
+            console.print(
+                f"[bold]Findings:[/bold] "
+                f"{format_console_list(contract.get('finding_refs', []))}"
+            )
+            console.print(
+                f"[bold]Priority:[/bold] {contract.get('priority')}"
+            )
+            console.print(
+                f"[bold]Why Now:[/bold] {contract.get('priority_reason')}"
+            )
+            console.print(
+                f"[bold]Repair Objective:[/bold] {contract.get('repair_objective')}"
+            )
+            console.print(
+                f"[bold]Repair Strategy:[/bold] {contract.get('repair_strategy')}"
+            )
+            console.print(
+                f"[bold]Change Boundary:[/bold] {contract.get('change_boundary')}"
+            )
+            console.print(
+                f"[bold]Protect:[/bold] {contract.get('protected_behavior')}"
+            )
+            console.print(
+                f"[bold]Side-effect Risk:[/bold] {contract.get('side_effect_risk')}"
+            )
+            console.print(
+                f"[bold]Verification:[/bold] {contract.get('verification')}"
+            )
+            console.print(
+                f"[bold]Done When:[/bold] {contract.get('done_condition')}"
+            )
+            console.print(
+                f"[bold]Contract Status:[/bold] {contract.get('status')}"
+            )
+
+    console.print(
+        f"\n[bold]Current Knowledge Required:[/bold] "
+        f"{repair_data.get('current_knowledge_required', False)}"
+    )
+    if repair_data.get("current_knowledge_reason"):
+        console.print(
+            f"[bold]Why:[/bold] {repair_data.get('current_knowledge_reason')}"
+        )
 
     console.print(
         f"[bold]Next Action:[/bold] "
         f"{repair_data.get('next_action')}"
     )
 
-    if repair_data.get(
-        "llm_error"
-    ):
+    for warning in repair_data.get("warnings", []):
         console.print(
-            "\n[bold red]"
-            "Repair Agent LLM Error"
-            "[/bold red]"
-        )
-        console.print(
-            repair_data.get(
-                "llm_error"
-            )
+            f"[bold yellow]Agent 2 Warning:[/bold yellow] {warning}"
         )
 
-    for warning in repair_data.get(
-        "warnings",
-        [],
-    ):
+    for limitation in repair_data.get("limitations", []):
         console.print(
-            f"[bold yellow]"
-            f"Repair Agent Warning:"
-            f"[/bold yellow] "
-            f"{warning}"
+            f"[bold yellow]Agent 2 Limitation:[/bold yellow] {limitation}"
         )
+
+    if repair_data.get("llm_error"):
+        console.print(
+            "\n[bold red]Agent 2 LLM Fallback Reason[/bold red]"
+        )
+        console.print(repair_data.get("llm_error"))
 
 
 def print_code_agent_result(
@@ -657,7 +707,7 @@ def print_qa_decision(
         f"{workflow_status.get('log_analysis', 'NOT_REQUESTED')}"
     )
     console.print(
-        f"- Agent 2 Repair Guidance: "
+        f"- Defect Resolution Intelligence Analyst: "
         f"{workflow_status.get('repair_guidance', 'NOT_REQUESTED')}"
     )
     console.print(
@@ -726,7 +776,7 @@ def analyze_code(
     "--repair",
     is_flag=True,
     help=(
-        "Send execution logs to the repair agent."
+        "Build prioritized evidence-linked repair guidance from available QA findings."
     ),
 )
 @click.option(
@@ -1067,9 +1117,7 @@ def scan(
     if not static_map.get(
         "has_tests"
     ):
-        skip_reason = build_no_tests_skip_reason(
-            static_map
-        )
+        skip_reason = build_no_tests_skip_reason(static_map)
         execution_result = build_skipped_result(
             suggested_command,
             skip_reason,
@@ -1077,55 +1125,64 @@ def scan(
         )
 
         console.print(
-            "\n[bold yellow]"
-            "Test Execution Skipped"
-            "[/bold yellow]"
+            "\n[bold yellow]Test Execution Skipped[/bold yellow]"
         )
         console.print(
-            f"[bold]Status:[/bold] "
-            f"{execution_result['status']}"
+            f"[bold]Status:[/bold] {execution_result['status']}"
         )
         console.print(
-            f"[bold]Command Profile:[/bold] "
-            f"{execution_result['command_profile']}"
+            f"[bold]Command Profile:[/bold] {execution_result['command_profile']}"
         )
         console.print(
-            f"[bold]Execution Policy:[/bold] "
-            f"{execution_result['execution_policy']}"
+            f"[bold]Execution Policy:[/bold] {execution_result['execution_policy']}"
         )
         console.print(
-            f"[bold]Execution Strategy:[/bold] "
-            f"{execution_result['execution_strategy']}"
+            f"[bold]Execution Strategy:[/bold] {execution_result['execution_strategy']}"
         )
         console.print(
-            f"[bold]Shell Enabled:[/bold] "
-            f"{execution_result['shell_enabled']}"
+            f"[bold]Shell Enabled:[/bold] {execution_result['shell_enabled']}"
         )
         console.print(
-            f"[bold]Command Not Run:[/bold] "
-            f"{execution_result['command']}"
+            f"[bold]Command Not Run:[/bold] {execution_result['command']}"
         )
         console.print(
-            f"[bold]Reason:[/bold] "
-            f"{execution_result['skip_reason']}"
+            f"[bold]Reason:[/bold] {execution_result['skip_reason']}"
         )
         console.print(
-            f"[bold]Exit Code:[/bold] "
-            f"{execution_result['exit_code']}"
+            f"[bold]Exit Code:[/bold] {execution_result['exit_code']}"
         )
 
-        if (
-            analyze
-            or repair
-            or code_fix
-        ):
+        if analyze or code_fix:
             console.print(
                 "\n[bold yellow]"
-                "Runtime Quality Intelligence analysis, Agent 2 repair guidance, "
-                "and Agent 3 runtime code guidance were not run because no test "
-                "command was executed. Agent 3 source review was completed independently."
+                "Runtime Quality Intelligence analysis and Agent 3 runtime code guidance "
+                "were not run because no test command was executed. "
+                "Agent 3 source review was completed independently."
                 "[/bold yellow]"
             )
+
+        if repair:
+            console.print(
+                "\n[bold magenta]"
+                "Defect Resolution Intelligence Analyst Started"
+                "[/bold magenta]"
+            )
+            repair_result = suggest_repair_with_agent(
+                repair_agent_url,
+                result,
+                execution_result,
+                agent_data,
+                source_review_data,
+            )
+
+            if repair_result["success"]:
+                repair_data = repair_result["data"]
+            else:
+                repair_data = build_unavailable_repair_guidance(
+                    repair_result["error"]
+                )
+
+            print_repair_agent_result(repair_data)
     else:
         console.print(
             "\n[bold magenta]"
@@ -1291,7 +1348,7 @@ def scan(
         if repair:
             console.print(
                 "\n[bold magenta]"
-                "Agent 2 Repair Guidance Started"
+                "Defect Resolution Intelligence Analyst Started"
                 "[/bold magenta]"
             )
 
@@ -1300,6 +1357,7 @@ def scan(
                 result,
                 execution_result,
                 agent_data,
+                source_review_data,
             )
 
             if repair_result[
@@ -1433,3 +1491,4 @@ def scan(
                 ]
             )
         )
+

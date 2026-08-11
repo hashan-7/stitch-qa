@@ -18,6 +18,8 @@ RUNTIME_AGENT_RETRY_TOTAL = 1
 MAX_CODE_SNIPPET_CHARS = 8000
 MAX_ERROR_LOG_CHARS = 12000
 MAX_RUNTIME_AGENT_LOG_CHARS = 24000
+MAX_REPAIR_AGENT_LOG_CHARS = 8000
+MAX_REPAIR_SOURCE_FINDINGS = 100
 MAX_RUNTIME_FAILURE_RECORDS = 100
 MAX_RUNTIME_TRACE_CHARS = 1500
 MAX_RUNTIME_RAW_FAILURE_CHARS = 2000
@@ -1030,87 +1032,146 @@ def build_unavailable_log_analysis(
 
 
 def normalize_repair_agent_data(data):
-    if not isinstance(
-        data,
-        dict,
-    ):
+    if not isinstance(data, dict):
         return None
 
-    if not data.get(
-        "status"
-    ):
+    if not data.get("status"):
         return None
+
+    contracts = []
+    for item in normalize_list(data.get("stitch_repair_contracts")):
+        if not isinstance(item, dict):
+            continue
+        contracts.append(
+            {
+                "contract_id": item.get("contract_id"),
+                "finding_refs": normalize_list(item.get("finding_refs")),
+                "title": item.get("title"),
+                "priority": item.get("priority"),
+                "priority_reason": item.get("priority_reason"),
+                "repair_objective": item.get("repair_objective"),
+                "repair_strategy": item.get("repair_strategy"),
+                "change_boundary": item.get("change_boundary"),
+                "protected_behavior": item.get("protected_behavior"),
+                "side_effect_risk": item.get("side_effect_risk"),
+                "verification": item.get("verification"),
+                "done_condition": item.get("done_condition"),
+                "status": item.get("status") or "PENDING_VERIFICATION",
+            }
+        )
+
+    repair_risk = (
+        data.get("repair_risk_level")
+        or data.get("risk_level")
+        or "UNKNOWN"
+    )
 
     return {
-        "agent": (
-            data.get(
-                "agent"
-            )
-            or "repair-agent"
+        "agent_id": data.get("agent_id") or "defect-resolution-analyst",
+        "display_name": (
+            data.get("display_name")
+            or "Defect Resolution Intelligence Analyst"
         ),
-        "mode": (
-            data.get(
-                "mode"
-            )
-            or "unknown"
+        "agent_version": data.get("agent_version") or "2.0",
+        "agent": data.get("agent") or "repair-agent",
+        "mode": data.get("mode") or "unknown",
+        "model": data.get("model"),
+        "status": data.get("status"),
+        "overall_priority": data.get("overall_priority") or "NONE",
+        "confidence": data.get("confidence") or "LOW",
+        "repair_risk_level": repair_risk,
+        "risk_level": repair_risk,
+        "auto_apply": bool(data.get("auto_apply", False)),
+        "summary": data.get("summary"),
+        "stitch_repair_contracts": contracts,
+        "current_knowledge_required": bool(
+            data.get("current_knowledge_required", False)
         ),
-        "status": data.get(
-            "status"
+        "current_knowledge_reason": data.get("current_knowledge_reason"),
+        "suggestions": normalize_list(data.get("suggestions")),
+        "next_action": data.get("next_action"),
+        "warnings": normalize_list(data.get("warnings")),
+        "limitations": normalize_list(data.get("limitations")),
+        "llm_metrics": (
+            data.get("llm_metrics")
+            if isinstance(data.get("llm_metrics"), dict)
+            else None
         ),
-        "risk_level": (
-            data.get(
-                "risk_level"
-            )
-            or "UNKNOWN"
-        ),
-        "auto_apply": bool(
-            data.get(
-                "auto_apply",
-                False,
-            )
-        ),
-        "summary": data.get(
-            "summary"
-        ),
-        "suggestions": normalize_list(
-            data.get(
-                "suggestions"
-            )
-        ),
-        "next_action": data.get(
-            "next_action"
-        ),
-        "warnings": normalize_list(
-            data.get(
-                "warnings"
-            )
-        ),
-        "llm_error": data.get(
-            "llm_error"
-        ),
+        "llm_error": data.get("llm_error"),
     }
 
 
-def build_unavailable_repair_guidance(
-    error,
-):
+def build_unavailable_repair_guidance(error):
     return {
+        "agent_id": "defect-resolution-analyst",
+        "display_name": "Defect Resolution Intelligence Analyst",
+        "agent_version": "2.0",
         "agent": "repair-agent",
         "mode": "unavailable",
+        "model": None,
         "status": "UNAVAILABLE",
+        "overall_priority": "NONE",
+        "confidence": "LOW",
+        "repair_risk_level": "UNKNOWN",
         "risk_level": "UNKNOWN",
         "auto_apply": False,
         "summary": (
-            "Repair guidance could not be completed because Agent 2 was unavailable."
+            "Defect resolution planning could not be completed because Agent 2 was unavailable."
         ),
+        "stitch_repair_contracts": [],
+        "current_knowledge_required": False,
+        "current_knowledge_reason": None,
         "suggestions": [],
         "next_action": (
-            "Check the Repair Agent deployment and rerun Stitch QA."
+            "Check the Defect Resolution Intelligence Analyst deployment and rerun Stitch QA."
         ),
-        "warnings": [
-            str(error)
+        "warnings": [str(error)],
+        "limitations": [
+            "No Agent 2 repair plan was available; validated QA evidence remains unchanged."
         ],
+        "llm_metrics": None,
         "llm_error": None,
+    }
+
+
+def trim_repair_text(value, limit):
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def build_repair_source_review_payload(source_review_data):
+    source = source_review_data if isinstance(source_review_data, dict) else {}
+    findings = []
+
+    for item in normalize_list(source.get("findings"))[:MAX_REPAIR_SOURCE_FINDINGS]:
+        if not isinstance(item, dict):
+            continue
+        finding = {
+            "id": item.get("id"),
+            "severity": item.get("severity"),
+            "title": trim_repair_text(item.get("title"), 240),
+            "category": trim_repair_text(item.get("category"), 120),
+            "file_path": trim_repair_text(item.get("file_path"), 500),
+            "line": item.get("line"),
+            "confidence": item.get("confidence"),
+            "evidence": trim_repair_text(item.get("evidence"), 1000),
+            "impact": trim_repair_text(item.get("impact"), 600),
+            "recommendation": trim_repair_text(item.get("recommendation"), 600),
+        }
+        findings.append(
+            {key: value for key, value in finding.items() if value not in {None, ""}}
+        )
+
+    return {
+        "status": source.get("status"),
+        "risk_level": source.get("risk_level"),
+        "release_recommendation": source.get("release_recommendation"),
+        "findings_count": int(source.get("findings_count", len(findings)) or 0),
+        "findings": findings,
+        "warnings": normalize_list(source.get("warnings"))[:20],
+        "limitations": normalize_list(source.get("limitations"))[:20],
     }
 
 
@@ -1339,59 +1400,41 @@ def suggest_repair_with_agent(
     scan_result,
     execution_result,
     agent_data=None,
+    source_review_data=None,
 ):
-    failure_context = get_failure_context(
-        execution_result
-    )
+    failure_context = get_failure_context(execution_result)
+    stdout = execution_result.get("stdout") or ""
+    stderr = execution_result.get("stderr") or ""
 
     payload = {
-        "project_type": scan_result[
-            "project_type"
-        ],
-        "command": execution_result[
-            "command"
-        ],
-        "success": execution_result[
-            "success"
-        ],
-        "exit_code": execution_result[
-            "exit_code"
-        ],
-        "stdout": execution_result[
-            "stdout"
-        ],
-        "stderr": execution_result[
-            "stderr"
-        ],
-        "root_cause": get_root_cause(
-            agent_data,
-            execution_result,
-        ),
-        "failure_type": failure_context[
-            "failure_type"
-        ],
-        "help_message": failure_context[
-            "help_message"
-        ],
+        "project_type": scan_result["project_type"],
+        "command": execution_result.get("command") or "",
+        "success": bool(execution_result.get("success")),
+        "exit_code": execution_result.get("exit_code"),
+        "stdout": stdout[-MAX_REPAIR_AGENT_LOG_CHARS:],
+        "stderr": stderr[-MAX_REPAIR_AGENT_LOG_CHARS:],
+        "failure_type": failure_context["failure_type"],
+        "help_message": failure_context["help_message"],
+        "runtime_evidence": build_runtime_evidence_payload(execution_result),
+        "runtime_analysis": agent_data if isinstance(agent_data, dict) else None,
+        "source_review": build_repair_source_review_payload(source_review_data),
     }
 
     try:
         response = requests.post(
             f"{repair_agent_url.rstrip('/')}/suggest",
             json=payload,
-            timeout=DEFAULT_AGENT_TIMEOUT_SECONDS,
+            timeout=(15, DEFAULT_AGENT_TIMEOUT_SECONDS),
         )
         response.raise_for_status()
-        data = normalize_repair_agent_data(
-            response.json()
-        )
+        data = normalize_repair_agent_data(response.json())
 
         if data is None:
             return {
                 "success": False,
                 "data": None,
                 "error": (
-                    "Repair agent returned an invalid guidance response."
+                    "Defect Resolution Intelligence Analyst returned an invalid guidance response."
                 ),
             }
 
@@ -1401,16 +1444,11 @@ def suggest_repair_with_agent(
             "error": None,
         }
 
-    except (
-        requests.exceptions.RequestException,
-        ValueError,
-    ) as error:
+    except (requests.exceptions.RequestException, ValueError) as error:
         return {
             "success": False,
             "data": None,
-            "error": str(
-                error
-            ),
+            "error": str(error),
         }
 
 
@@ -1527,4 +1565,5 @@ def suggest_code_fix_with_agent(
         "data": data,
         "error": None,
     }
+
 
