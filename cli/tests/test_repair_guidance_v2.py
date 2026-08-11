@@ -300,3 +300,37 @@ def test_main_source_only_branch_can_invoke_agent2_from_source_findings():
     assert "suggest_repair_with_agent" in block
     assert "source_review_data" in block
     assert "Runtime Quality Intelligence analysis and Agent 3 runtime code guidance" in block
+
+
+def test_combined_risk_preserves_critical_runtime_risk():
+    reporter = load_reporter()
+    execution = passing_execution()
+    execution["success"] = False
+    execution["status"] = "FAILED"
+    execution["exit_code"] = 1
+    execution["runtime_evidence"]["test_result"] = "FAIL"
+    execution["runtime_evidence"]["execution_status"] = "COMPLETED"
+    runtime_analysis = {
+        "execution_status": "COMPLETED",
+        "test_result": "FAIL",
+        "release_gate": "BLOCK_RELEASE",
+        "runtime_risk_level": "CRITICAL",
+        "failure_origin": "APPLICATION_DEFECT",
+        "final_status": "FAIL",
+    }
+
+    decision = reporter.build_qa_decision(
+        execution,
+        source_review_data("LOW"),
+        agent_data=runtime_analysis,
+        repair_data=sample_repair_response(),
+        code_data=None,
+        workflow_context={
+            "analyze_requested": True,
+            "repair_requested": True,
+        },
+    )
+
+    assert decision["status"] == "BLOCK_RELEASE"
+    assert decision["risk_level"] == "CRITICAL"
+    assert decision["runtime_gate"]["runtime_risk_level"] == "CRITICAL"

@@ -624,3 +624,75 @@ def test_passing_runtime_warning_is_preserved_as_repair_follow_up():
     assert fallback["overall_priority"] == "P2"
     assert fallback["current_knowledge_required"] is True
 
+
+
+def test_semantic_quality_gate_repairs_weak_granite_contract_fields():
+    request = request_with_findings(include_source=False)
+    request.runtime_evidence = {
+        "test_result": "FAIL",
+        "test_summary": {
+            "total": 4,
+            "passed": 2,
+            "failed": 2,
+            "errors": 0,
+            "skipped": 0,
+        },
+    }
+    payload = valid_plan(refs=["RQI-001"], priority="P1")
+    payload["x"][0]["s"] = "app.py:10"
+    payload["x"][0]["b"] = "app.py:10"
+    payload["x"][0]["q"] = "None: Division by zero causes runtime errors and crashes"
+    payload["x"][0]["r"] = "H"
+    payload["x"][0]["v"] = "None: Verify division by zero is handled correctly"
+
+    findings = agent2.collect_locked_findings(request)
+    plan = agent2.validate_plan(
+        agent2.parse_model_output(json.dumps(payload)),
+        request,
+        findings,
+    )
+    merged = agent2.merge_model_plan(plan, request, findings)
+    contract = merged["stitch_repair_contracts"][0]
+
+    assert contract["repair_objective"] != payload["x"][0]["o"]
+    assert "valueerror" in contract["repair_objective"].lower()
+    assert contract["repair_strategy"] != "app.py:10"
+    assert "validation" in contract["repair_strategy"].lower()
+    assert "limit changes" in contract["change_boundary"].lower()
+    assert "preserve the 2 currently passing tests" in contract["protected_behavior"].lower()
+    assert "rerun" in contract["verification"].lower()
+    assert "complete test suite" in contract["verification"].lower()
+    assert "no new failures" in contract["verification"].lower()
+    assert contract["side_effect_risk"] == "MEDIUM"
+    assert merged["repair_risk_level"] == "MEDIUM"
+
+
+def test_semantic_quality_gate_preserves_good_ai_contract_fields():
+    request = request_with_findings()
+    payload = valid_plan()
+    findings = agent2.collect_locked_findings(request)
+    plan = agent2.validate_plan(
+        agent2.parse_model_output(json.dumps(payload)),
+        request,
+        findings,
+    )
+    merged = agent2.merge_model_plan(plan, request, findings)
+    contract = merged["stitch_repair_contracts"][0]
+
+    assert contract["repair_strategy"] == payload["x"][0]["s"]
+    assert contract["change_boundary"] == payload["x"][0]["b"]
+    assert contract["protected_behavior"] == payload["x"][0]["q"]
+    assert contract["verification"] == payload["x"][0]["v"]
+    assert contract["side_effect_risk"] == "LOW"
+
+
+def test_prompt_distinguishes_repair_risk_from_defect_severity():
+    request = request_with_findings(include_source=False)
+    findings = agent2.collect_locked_findings(request)
+    messages = agent2.build_messages(request, findings)
+    system_prompt = messages[0]["content"].lower()
+
+    assert "must never be only a file or line location" in system_prompt
+    assert "must include both targeted confirmation" in system_prompt
+    assert "risk introduced by implementing the repair" in system_prompt
+    assert "not the severity of the original defect" in system_prompt

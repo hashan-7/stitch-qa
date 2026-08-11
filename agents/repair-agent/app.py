@@ -1189,6 +1189,11 @@ def build_messages(request, findings):
         "Prioritize by impact, blocking effect, dependency order, repair scope, and regression risk; severity and repair priority are related but not identical. "
         "Group findings only when one repair objective genuinely resolves them together. "
         "For every repair contract define the smallest useful change boundary, behavior that must remain working, side-effect risk, confirmation verification, regression verification, and a measurable done condition. "
+        "Repair strategy must describe the repair action and must never be only a file or line location. "
+        "Change boundary must describe the permitted scope, not merely repeat locations. "
+        "Protected behavior must name working behavior that should remain unchanged and must never be None, N/A, or an impact statement. "
+        "Verification must include both targeted confirmation of the referenced finding and broader regression verification. "
+        "Side-effect risk means risk introduced by implementing the repair, not the severity of the original defect; narrow local validation changes are normally LOW or MEDIUM unless the evidence shows broader coupling. "
         "Do not generate patches, code, commits, commands that modify the project, or automatic fixes. "
         "If a version, vendor behavior, dependency compatibility, deprecation, or security advisory needs up-to-date external documentation, set current_knowledge_required=true and explain why; do not invent the missing current fact. "
         "Return only JSON matching the required schema. "
@@ -1305,6 +1310,397 @@ def text_fields(plan):
     return values
 
 
+PLACEHOLDER_VALUES = {
+    "none",
+    "n/a",
+    "na",
+    "not applicable",
+    "not available",
+    "unknown",
+    "null",
+}
+
+REPAIR_ACTION_TERMS = (
+    "add ",
+    "validate",
+    "guard",
+    "handle",
+    "replace",
+    "update",
+    "configure",
+    "remove",
+    "restore",
+    "return",
+    "raise",
+    "prevent",
+    "resolve",
+    "correct",
+    "limit",
+)
+
+PROTECTION_TERMS = (
+    "preserve",
+    "keep",
+    "maintain",
+    "unchanged",
+    "working",
+    "valid",
+    "passing",
+)
+
+REGRESSION_TERMS = (
+    "regression",
+    "full test",
+    "complete test",
+    "entire test",
+    "no new failure",
+    "all tests",
+)
+
+CONFIRMATION_TERMS = (
+    "rerun",
+    "re-run",
+    "confirm",
+    "verify",
+    "expected",
+    "affected test",
+    "failing test",
+)
+
+BROAD_REPAIR_INDICATORS = (
+    "dependency",
+    "plugin",
+    "configuration",
+    "architecture",
+    "migration",
+    "security",
+    "database",
+    "schema",
+    "api contract",
+    "public api",
+    "cross-service",
+    "multiple modules",
+)
+
+
+def is_placeholder_text(value):
+    normalized = clean_text(value, 400).lower().strip(" .:-")
+    if not normalized:
+        return True
+    if normalized in PLACEHOLDER_VALUES:
+        return True
+    return any(
+        normalized.startswith(f"{item}:")
+        for item in PLACEHOLDER_VALUES
+    )
+
+
+def strip_file_line_references(value):
+    text = FILE_LINE_PATTERN.sub(" ", clean_text(value, 600))
+    text = re.sub(r"[\s,;:/|()\[\]{}-]+", " ", text)
+    return text.strip()
+
+
+def is_location_only_text(value):
+    original = clean_text(value, 600)
+    if not original:
+        return True
+    if not FILE_LINE_PATTERN.search(original):
+        return False
+    remainder = strip_file_line_references(original)
+    return len(remainder.split()) <= 3
+
+
+def selected_findings_for_contract(contract, findings):
+    refs = set(contract.finding_refs)
+    return [
+        finding
+        for finding in findings
+        if finding.get("ref") in refs
+    ]
+
+
+def selected_locations(findings):
+    locations = []
+    for finding in findings:
+        for location in finding.get("locations", []):
+            value = clean_text(location, 180)
+            if value and value not in locations:
+                locations.append(value)
+    return locations
+
+
+def selected_test_evidence(findings):
+    evidence = []
+    seen = set()
+    for finding in findings:
+        for item in normalize_list(finding.get("evidence")):
+            if not isinstance(item, dict):
+                continue
+            test_name = clean_text(item.get("test_name"), 180)
+            expected = clean_text(item.get("expected"), 120)
+            actual = clean_text(
+                item.get("actual") or item.get("exception_type"),
+                120,
+            )
+            key = (test_name, expected, actual)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence.append(
+                {
+                    "test_name": test_name,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+    return evidence
+
+
+def build_grounded_repair_objective(selected):
+    evidence = selected_test_evidence(selected)
+    expected_values = list(
+        dict.fromkeys(
+            item["expected"]
+            for item in evidence
+            if item.get("expected")
+        )
+    )
+
+    if expected_values:
+        return clean_text(
+            f"Restore the expected {', '.join(expected_values[:3])} behavior for the referenced failing paths while preserving valid behavior outside them.",
+            260,
+        )
+
+    recommendations = [
+        clean_text(finding.get("recommendation"), 220)
+        for finding in selected
+        if clean_text(finding.get("recommendation"), 220)
+    ]
+    if recommendations:
+        return clean_text(recommendations[0], 260)
+
+    return (
+        "Resolve the referenced evidence-backed condition without changing unrelated behavior."
+    )
+
+
+def build_grounded_repair_strategy(selected):
+    evidence = selected_test_evidence(selected)
+    locations = selected_locations(selected)
+    expected_values = list(
+        dict.fromkeys(
+            item["expected"]
+            for item in evidence
+            if item.get("expected")
+        )
+    )
+    actual_values = list(
+        dict.fromkeys(
+            item["actual"]
+            for item in evidence
+            if item.get("actual")
+        )
+    )
+
+    if evidence and expected_values:
+        expected_text = ", ".join(expected_values[:3])
+        actual_text = ", ".join(actual_values[:3]) or "the observed failure"
+        location_text = (
+            f" at {', '.join(locations[:4])}"
+            if locations
+            else " in the affected runtime path"
+        )
+        return clean_text(
+            f"Add targeted validation or controlled error handling{location_text} so the affected paths produce the expected {expected_text} behavior instead of {actual_text}; avoid unrelated implementation changes.",
+            320,
+        )
+
+    recommendations = [
+        clean_text(finding.get("recommendation"), 220)
+        for finding in selected
+        if clean_text(finding.get("recommendation"), 220)
+    ]
+    if recommendations:
+        return clean_text(
+            f"Apply the smallest targeted change needed to satisfy this evidence: {recommendations[0]}",
+            320,
+        )
+
+    return (
+        "Apply the smallest targeted change that resolves the referenced finding while avoiding unrelated refactoring or behavior changes."
+    )
+
+
+def build_grounded_change_boundary(selected):
+    locations = selected_locations(selected)
+    if locations:
+        return clean_text(
+            f"Limit changes to the behavior represented by {', '.join(locations[:4])}; do not broaden the repair into unrelated files or refactoring.",
+            240,
+        )
+    return (
+        "Limit changes to the component, configuration, or input boundary directly represented by the referenced finding; avoid unrelated changes."
+    )
+
+
+def build_grounded_protected_behavior(selected, request):
+    runtime_evidence = request.runtime_evidence or {}
+    test_summary = runtime_evidence.get("test_summary") or {}
+    passed = int(test_summary.get("passed") or 0)
+
+    if passed > 0:
+        return clean_text(
+            f"Preserve the {passed} currently passing tests and all valid-input behavior outside the referenced failure paths.",
+            240,
+        )
+
+    if any(finding.get("source") == "runtime" for finding in selected):
+        return (
+            "Preserve currently successful runtime behavior outside the referenced failure paths and keep valid inputs unchanged."
+        )
+
+    return (
+        "Preserve behavior outside the referenced source finding and avoid unrelated functional or structural changes."
+    )
+
+
+def build_grounded_verification(selected, request):
+    evidence = selected_test_evidence(selected)
+    test_names = list(
+        dict.fromkeys(
+            item["test_name"]
+            for item in evidence
+            if item.get("test_name")
+        )
+    )
+    expected_values = list(
+        dict.fromkeys(
+            item["expected"]
+            for item in evidence
+            if item.get("expected")
+        )
+    )
+
+    if test_names:
+        targeted = ", ".join(test_names[:4])
+        expected_text = (
+            f" and confirm the expected {', '.join(expected_values[:3])} behavior"
+            if expected_values
+            else " and confirm the referenced failures no longer reproduce"
+        )
+        return clean_text(
+            f"Rerun {targeted}{expected_text}; then run the complete test suite and confirm exit code 0 with no new failures.",
+            300,
+        )
+
+    runtime_analysis = request.runtime_analysis or {}
+    verification_steps = [
+        clean_text(item, 160)
+        for item in normalize_list(runtime_analysis.get("verification_steps"))
+        if clean_text(item, 160)
+    ]
+    if verification_steps:
+        base = " ".join(verification_steps[:3])
+        if not any(term in base.lower() for term in REGRESSION_TERMS):
+            base += " Then run the relevant regression suite and confirm no new failures."
+        return clean_text(base, 300)
+
+    return (
+        "Confirm the referenced finding is resolved with a targeted check, then run all available regression tests or project checks and verify no new failure is introduced."
+    )
+
+
+def is_narrow_repair(selected, boundary):
+    categories = " ".join(
+        clean_text(finding.get("category"), 100).lower()
+        for finding in selected
+    )
+    combined = f"{categories} {clean_text(boundary, 240).lower()}"
+    if any(indicator in combined for indicator in BROAD_REPAIR_INDICATORS):
+        return False
+
+    files = set()
+    for location in selected_locations(selected):
+        match = FILE_LINE_PATTERN.search(location)
+        if match:
+            files.add(match.group("path").replace("\\", "/"))
+
+    return len(files) <= 1
+
+
+def normalize_contract_semantics(contract, request, findings):
+    selected = selected_findings_for_contract(contract, findings)
+
+    objective = clean_text(contract.repair_objective, 260)
+    expected_values = [
+        item["expected"]
+        for item in selected_test_evidence(selected)
+        if item.get("expected")
+    ]
+    if (
+        is_placeholder_text(objective)
+        or (
+            expected_values
+            and not any(
+                expected.lower() in objective.lower()
+                for expected in expected_values
+            )
+        )
+    ):
+        objective = build_grounded_repair_objective(selected)
+
+    strategy = clean_text(contract.repair_strategy, 320)
+    if (
+        is_placeholder_text(strategy)
+        or is_location_only_text(strategy)
+        or not any(term in strategy.lower() for term in REPAIR_ACTION_TERMS)
+    ):
+        strategy = build_grounded_repair_strategy(selected)
+
+    boundary = clean_text(contract.change_boundary, 240)
+    if is_placeholder_text(boundary) or is_location_only_text(boundary):
+        boundary = build_grounded_change_boundary(selected)
+
+    protected = clean_text(contract.protected_behavior, 240)
+    if (
+        is_placeholder_text(protected)
+        or not any(term in protected.lower() for term in PROTECTION_TERMS)
+    ):
+        protected = build_grounded_protected_behavior(selected, request)
+
+    verification = clean_text(contract.verification, 300)
+    lowered_verification = verification.lower()
+    has_confirmation = any(
+        term in lowered_verification
+        for term in CONFIRMATION_TERMS
+    )
+    has_regression = any(
+        term in lowered_verification
+        for term in REGRESSION_TERMS
+    )
+    if (
+        is_placeholder_text(verification)
+        or not has_confirmation
+        or not has_regression
+    ):
+        verification = build_grounded_verification(selected, request)
+
+    repair_risk = contract.side_effect_risk
+    if repair_risk == "HIGH" and is_narrow_repair(selected, boundary):
+        repair_risk = "MEDIUM"
+
+    return {
+        "repair_objective": objective,
+        "repair_strategy": strategy,
+        "change_boundary": boundary,
+        "protected_behavior": protected,
+        "side_effect_risk": repair_risk,
+        "verification": verification,
+    }
+
+
 def validate_plan(plan, request, findings):
     finding_refs = {finding["ref"] for finding in findings}
     used_refs = []
@@ -1389,6 +1785,11 @@ def merge_model_plan(plan, request, findings, overflow_findings=None):
     contracts = []
 
     for index, item in enumerate(plan.contracts, start=1):
+        semantic = normalize_contract_semantics(
+            item,
+            request,
+            findings,
+        )
         contracts.append(
             {
                 "contract_id": f"STITCH-RC-{index:03d}",
@@ -1399,12 +1800,12 @@ def merge_model_plan(plan, request, findings, overflow_findings=None):
                 ),
                 "priority": item.priority,
                 "priority_reason": clean_text(item.priority_reason, 220),
-                "repair_objective": clean_text(item.repair_objective, 260),
-                "repair_strategy": clean_text(item.repair_strategy, 320),
-                "change_boundary": clean_text(item.change_boundary, 240),
-                "protected_behavior": clean_text(item.protected_behavior, 240),
-                "side_effect_risk": item.side_effect_risk,
-                "verification": clean_text(item.verification, 300),
+                "repair_objective": semantic["repair_objective"],
+                "repair_strategy": semantic["repair_strategy"],
+                "change_boundary": semantic["change_boundary"],
+                "protected_behavior": semantic["protected_behavior"],
+                "side_effect_risk": semantic["side_effect_risk"],
+                "verification": semantic["verification"],
                 "done_condition": (
                     "The referenced findings no longer reproduce, the targeted confirmation succeeds, and the stated regression verification introduces no new failure."
                 ),

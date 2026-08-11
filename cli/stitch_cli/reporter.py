@@ -1231,7 +1231,7 @@ def build_qa_decision(
             else "NONE"
         )
     )
-    log_risk = (
+    release_gate_risk = (
         "HIGH"
         if agent_release_gate
         == "BLOCK_RELEASE"
@@ -1241,6 +1241,10 @@ def build_qa_decision(
             == "REVIEW_REQUIRED"
             else "NONE"
         )
+    )
+    log_risk = highest_risk(
+        agent_runtime_risk,
+        release_gate_risk,
     )
 
     combined_risk = highest_risk(
