@@ -24,10 +24,10 @@ jobs:
 
     steps:
       - name: Checkout GitHub repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v7.0.0
 
       - name: Install Hugging Face CLI
-        run: python -m pip install --upgrade huggingface_hub
+        run: python -m pip install "huggingface_hub==1.27.0"
 
       - name: Prepare Runtime Quality Intelligence Analyst files
         run: |
@@ -48,10 +48,10 @@ jobs:
 
     steps:
       - name: Checkout GitHub repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v7.0.0
 
       - name: Install Hugging Face CLI
-        run: python -m pip install --upgrade huggingface_hub
+        run: python -m pip install "huggingface_hub==1.27.0"
 
       - name: Prepare repair agent files
         run: |
@@ -72,10 +72,10 @@ jobs:
 
     steps:
       - name: Checkout GitHub repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@1044a6dea927916f2c38ba5aeffbc0a847b1221a # v7.0.0
 
       - name: Install Hugging Face CLI
-        run: python -m pip install --upgrade huggingface_hub
+        run: python -m pip install "huggingface_hub==1.27.0"
 
       - name: Prepare code agent files
         run: |

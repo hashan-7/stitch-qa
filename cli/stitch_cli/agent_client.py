@@ -1099,7 +1099,7 @@ def normalize_repair_agent_data(data):
         "confidence": data.get("confidence") or "LOW",
         "repair_risk_level": repair_risk,
         "risk_level": repair_risk,
-        "auto_apply": bool(data.get("auto_apply", False)),
+        "auto_apply": False,
         "summary": data.get("summary"),
         "stitch_repair_contracts": contracts,
         "current_knowledge_required": bool(
@@ -1241,7 +1241,7 @@ def normalize_code_agent_data(data):
         "status": data.get("status"),
         "confidence": data.get("confidence") or "LOW",
         "risk_level": data.get("risk_level") or "UNKNOWN",
-        "auto_apply": bool(data.get("auto_apply", False)),
+        "auto_apply": False,
         "summary": data.get("summary"),
         "guidance": guidance,
         "suggested_patch": data.get("suggested_patch"),

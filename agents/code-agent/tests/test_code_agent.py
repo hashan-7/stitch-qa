@@ -454,7 +454,7 @@ def test_health_exposes_both_agent3_roles_and_qwen_coder_default():
     ]
     assert agent3.model_service.model_repo == "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
     assert agent3.model_service.model_file == "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
-    assert agent3.model_service.model_revision == "main"
+    assert agent3.model_service.model_revision == "f86cb2c1fa58255f8052cc32aeede1b7482d4361"
     assert agent3.model_service.quantization == "Q4_K_M"
 
 

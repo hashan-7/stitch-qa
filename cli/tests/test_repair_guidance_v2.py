@@ -160,6 +160,17 @@ def test_normalize_repair_response_preserves_v2_contract():
     assert normalized["auto_apply"] is False
 
 
+def test_remote_auto_apply_is_forced_false():
+    client = load_client()
+    repair_response = sample_repair_response()
+    repair_response["auto_apply"] = True
+    assurance_response = sample_repair_assurance_response()
+    assurance_response["auto_apply"] = True
+
+    assert client.normalize_repair_agent_data(repair_response)["auto_apply"] is False
+    assert client.normalize_code_agent_data(assurance_response)["auto_apply"] is False
+
+
 def test_repair_request_sends_runtime_and_source_evidence(monkeypatch):
     client = load_client()
     captured = {}

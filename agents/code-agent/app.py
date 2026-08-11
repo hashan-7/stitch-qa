@@ -364,7 +364,7 @@ class ModelService:
         ).strip()
         self.model_revision = os.getenv(
             "HF_MODEL_REVISION",
-            "main",
+            "f86cb2c1fa58255f8052cc32aeede1b7482d4361",
         ).strip()
         self.quantization = os.getenv("MODEL_QUANTIZATION", "Q4_K_M").strip()
         self.primary_model = os.getenv(
@@ -2424,4 +2424,3 @@ def suggest_code_fix(request: RepairAssuranceRequest):
     if request.repair_plan:
         return RepairAssuranceResponse.model_validate(repair_assurance_request(request))
     return RepairAssuranceResponse.model_validate(legacy_repair_assurance(request))
-

@@ -14,7 +14,8 @@ ENV MODEL_THREADS_BATCH=2
 ENV MODEL_USE_MMAP=true
 ENV HF_MODEL_REPO=Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF
 ENV HF_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
-ENV HF_MODEL_REVISION=main
+ENV HF_MODEL_REVISION=f86cb2c1fa58255f8052cc32aeede1b7482d4361
+ENV HF_LOCAL_FILES_ONLY=true
 ENV MODEL_QUANTIZATION=Q4_K_M
 
 RUN useradd -m -u 1000 user && \
@@ -37,6 +38,8 @@ RUN python -m pip install --user --upgrade pip && \
     --only-binary=llama-cpp-python \
     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
     -r requirements.txt
+
+RUN python -c "import os; from huggingface_hub import hf_hub_download; hf_hub_download(repo_id=os.environ['HF_MODEL_REPO'], filename=os.environ['HF_MODEL_FILE'], revision=os.environ['HF_MODEL_REVISION'], cache_dir=os.environ['MODEL_CACHE_DIR'])"
 
 COPY --chown=user:user app.py .
 
