@@ -6,18 +6,20 @@
 
 **Stitch QA** is an AI-assisted pre-deployment QA tool for Python and Java Maven projects.
 
-It scans a project, detects the supported execution profile, runs tests when possible, analyzes runtime evidence, reviews source-code risks, prepares repair guidance, and generates professional Markdown and JSON QA reports. Stitch QA is designed to support developer review before deployment; it does **not** automatically modify source code.
+It scans a project, detects the supported execution profile, runs tests when possible, analyzes runtime evidence, reviews source-code risks, prepares repair guidance, and generates professional Markdown and JSON QA reports.
+
+Stitch QA is designed to support developer review before deployment. It does **not** automatically modify source code.
 
 ---
 
 ## Why Stitch QA?
 
-Most projects fail before deployment for predictable reasons: missing validation, failing tests, unclear logs, weak test coverage, unsupported runtime environments, and incomplete release evidence.
+Software projects often fail before deployment because of failing tests, unclear logs, missing validation, unsupported runtime environments, weak test coverage, or incomplete release evidence.
 
-Stitch QA helps developers quickly answer:
+Stitch QA helps developers answer:
 
 - What type of project is this?
-- Can the test workflow run safely?
+- Can the supported test workflow run safely?
 - Did the test suite pass or fail?
 - What is the most likely root cause?
 - Which files and symbols are affected?
@@ -109,13 +111,20 @@ pip install git+https://github.com/hashan-7/stitch-qa.git
 git clone https://github.com/hashan-7/stitch-qa.git
 cd stitch-qa
 python -m venv .venv
+```
 
-# Linux / macOS
+Linux / macOS:
+
+```bash
 source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ./cli
+```
 
-# Windows PowerShell
+Windows PowerShell:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
-
 python -m pip install --upgrade pip
 python -m pip install -e ./cli
 ```
@@ -277,7 +286,7 @@ Run Stitch QA against a project folder:
 docker run --rm -v "${PWD}:/project" stitch-qa:local scan /project --run --analyze --repair
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
 docker run --rm -v "${PWD}:/project" stitch-qa:local scan /project --run --analyze --repair
@@ -400,20 +409,6 @@ Expected acceptance behavior:
 | PHP Composer execution support | Planned |
 | Go, Rust, and .NET support | Planned |
 | Patch generation with guarded validation | Future research |
-
----
-
-## Screenshots
-
-Keep screenshots only when they match the current CLI output and are stored in the repository.
-
-Recommended image usage:
-
-```markdown
-![Stitch QA CLI Output](docs/images/cli-demo.png)
-```
-
-Avoid screenshots that show outdated agent names, old commands, removed flags, broken links, private tokens, local machine paths, or temporary debug output.
 
 ---
 
