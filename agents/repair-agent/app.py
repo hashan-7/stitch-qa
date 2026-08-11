@@ -1764,7 +1764,12 @@ def validate_plan(plan, request, findings):
     if PRIORITY_ORDER[plan.overall_priority] < PRIORITY_ORDER[highest_contract_priority]:
         plan.overall_priority = highest_contract_priority
 
-    if not plan.current_knowledge_required:
+    grounded_current_knowledge = any(
+        finding_may_need_current_knowledge(finding)
+        for finding in findings
+    )
+    plan.current_knowledge_required = grounded_current_knowledge
+    if not grounded_current_knowledge:
         plan.current_knowledge_reason = ""
 
     return plan
@@ -1848,6 +1853,12 @@ def merge_model_plan(plan, request, findings, overflow_findings=None):
             "Overflow repair contracts use conservative deterministic planning because the AI reasoning window is intentionally bounded for CPU reliability."
         )
 
+    summary_strategy = (
+        clean_text(contracts[0]["repair_strategy"], 300).rstrip(" .")
+        if contracts
+        else "the highest-priority validated repair target"
+    )
+
     return {
         "agent_id": AGENT_ID,
         "display_name": DISPLAY_NAME,
@@ -1862,8 +1873,7 @@ def merge_model_plan(plan, request, findings, overflow_findings=None):
         "auto_apply": False,
         "summary": clean_text(
             f"Prepared {len(contracts)} prioritized evidence-linked repair contract"
-            f"{'s' if len(contracts) != 1 else ''}; start with "
-            f"{contracts[0]['repair_strategy'] if contracts else 'the highest-priority validated repair target'}.",
+            f"{'s' if len(contracts) != 1 else ''}; start with {summary_strategy}.",
             360,
         ),
         "stitch_repair_contracts": contracts,

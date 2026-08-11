@@ -200,7 +200,7 @@ def test_auto_modification_claim_is_rejected():
         agent2.validate_plan(plan, request, findings)
 
 
-def test_current_knowledge_flag_is_preserved():
+def test_current_knowledge_flag_requires_grounded_evidence():
     request = request_with_findings()
     findings = agent2.collect_locked_findings(request)
     payload = valid_plan()
@@ -213,9 +213,11 @@ def test_current_knowledge_flag_is_preserved():
         request,
         findings,
     )
+    assert plan.current_knowledge_required is False
+    assert plan.current_knowledge_reason == ""
     merged = agent2.merge_model_plan(plan, request, findings)
-    assert merged["current_knowledge_required"] is True
-    assert "compatibility" in merged["current_knowledge_reason"].lower()
+    assert merged["current_knowledge_required"] is False
+    assert merged["current_knowledge_reason"] is None
 
 
 def test_endpoint_uses_validated_ai_reasoning(monkeypatch):
