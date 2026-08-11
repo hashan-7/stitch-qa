@@ -135,6 +135,26 @@ def test_source_quality_java_maven_detects_runtime_command_execution(monkeypatch
     assert finding["line"] == 3
 
 
+def test_source_quality_detects_zero_divisor_validation_risks(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    content = (
+        "def divide(a, b):\n"
+        "    return a / b\n\n"
+        "def average(values):\n"
+        "    return sum(values) / len(values)\n"
+    )
+    request = source_request("Python Project", "app.py", content, has_tests=True)
+    result = agent3.review_source_request(request)
+
+    assert result["findings_count"] == 2
+    assert {item["title"] for item in result["findings"]} == {
+        "Potential unguarded divisor",
+        "Potential empty-collection divisor",
+    }
+    assert {item["line"] for item in result["findings"]} == {2, 5}
+    assert result["risk_level"] == "MEDIUM"
+
+
 def test_source_ai_finding_is_file_line_grounded_and_high_is_clamped(monkeypatch):
     monkeypatch.setattr(agent3.model_service, "enabled", True)
     content = "def ratio(value, total):\n    return value / total\n"
@@ -165,13 +185,14 @@ def test_source_ai_finding_is_file_line_grounded_and_high_is_clamped(monkeypatch
 
     assert result["mode"] == "hybrid-ai-validated"
     assert result["confidence"] == "HIGH"
-    assert result["findings_count"] == 1
-    finding = result["findings"][0]
+    assert result["findings_count"] == 2
+    titles = {item["title"] for item in result["findings"]}
+    assert "Potential unguarded divisor" in titles
+    finding = next(item for item in result["findings"] if item["detector"] == "ai-contextual-validated")
     assert finding["file_path"] == "app.py"
     assert finding["line"] == 2
     assert finding["severity"] == "MEDIUM"
     assert finding["evidence"] == "return value / total"
-    assert finding["detector"] == "ai-contextual-validated"
 
 
 def test_source_ai_unknown_location_is_discarded(monkeypatch):
@@ -365,8 +386,7 @@ def test_ai_repair_guidance_cannot_escape_contract_file_boundary(monkeypatch):
 
     assert result["mode"] == "ai-reasoned-validated"
     assert item["target_files"] == ["app.py"]
-    assert "divide" in item["target_symbols"]
-    assert "average" in item["target_symbols"]
+    assert item["target_symbols"] == ["divide"]
     assert item["change_boundary"] == runtime_contract()["change_boundary"]
     assert item["protected_behavior"] == runtime_contract()["protected_behavior"]
     assert item["current_knowledge_required"] is False
@@ -374,7 +394,53 @@ def test_ai_repair_guidance_cannot_escape_contract_file_boundary(monkeypatch):
     assert item["patch_validation_status"] == "NOT_GENERATED"
 
 
-def test_health_exposes_both_agent3_roles_and_granite_default():
+def test_deterministic_repair_guidance_targets_only_evidence_symbols(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    runtime_analysis = {
+        "root_cause_groups": [
+            {
+                "group_id": "RQI-001",
+                "evidence": [
+                    {"application_file": "app.py", "application_line": 5},
+                    {"application_file": "app.py", "application_line": 8},
+                ],
+            }
+        ]
+    }
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "success": False,
+            "exit_code": 1,
+            "runtime_analysis": runtime_analysis,
+            "repair_plan": {"stitch_repair_contracts": [runtime_contract()]},
+            "source_files": [
+                {
+                    "path": "app.py",
+                    "content": (
+                        "def add(a, b):\n"
+                        "    return a + b\n\n"
+                        "def divide(a, b):\n"
+                        "    return a / b\n\n"
+                        "def average(values):\n"
+                        "    return sum(values) / len(values)\n\n"
+                        "def multiply(a, b):\n"
+                        "    return a * b\n"
+                    ),
+                }
+            ],
+        }
+    )
+    result = agent3.repair_assurance_request(request)
+    item = result["guidance"][0]
+
+    assert result["mode"] == "deterministic-validated"
+    assert item["target_files"] == ["app.py"]
+    assert item["target_symbols"] == ["divide", "average"]
+
+
+def test_health_exposes_both_agent3_roles_and_qwen_coder_default():
     status = agent3.health_check()
     capabilities = {item["agent_id"] for item in status["capabilities"]}
 
@@ -386,9 +452,9 @@ def test_health_exposes_both_agent3_roles_and_granite_default():
         "Python Project",
         "Java Maven Project",
     ]
-    assert agent3.model_service.model_repo == "ibm-granite/granite-4.1-3b-GGUF"
-    assert agent3.model_service.model_file == "granite-4.1-3b-Q4_K_M.gguf"
-    assert agent3.model_service.model_revision == "b628c0ba2ad455695caee93e6a7ac8b3660ad229"
+    assert agent3.model_service.model_repo == "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
+    assert agent3.model_service.model_file == "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+    assert agent3.model_service.model_revision == "main"
     assert agent3.model_service.quantization == "Q4_K_M"
 
 

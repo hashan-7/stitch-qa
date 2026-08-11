@@ -356,15 +356,15 @@ class ModelService:
     def __init__(self):
         self.model_repo = os.getenv(
             "HF_MODEL_REPO",
-            "ibm-granite/granite-4.1-3b-GGUF",
+            "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
         ).strip()
         self.model_file = os.getenv(
             "HF_MODEL_FILE",
-            "granite-4.1-3b-Q4_K_M.gguf",
+            "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
         ).strip()
         self.model_revision = os.getenv(
             "HF_MODEL_REVISION",
-            "b628c0ba2ad455695caee93e6a7ac8b3660ad229",
+            "main",
         ).strip()
         self.quantization = os.getenv("MODEL_QUANTIZATION", "Q4_K_M").strip()
         self.primary_model = os.getenv(
@@ -741,6 +741,60 @@ def is_false_literal(node):
     return isinstance(node, ast.Constant) and node.value is False
 
 
+def node_contains_name(node, names):
+    targets = set(names)
+    return any(isinstance(child, ast.Name) and child.id in targets for child in ast.walk(node))
+
+
+def active_guard_names(body, line_number):
+    names = set()
+    for statement in body:
+        if getattr(statement, "lineno", 0) >= line_number:
+            break
+        if isinstance(statement, ast.If):
+            test_text = ast.unparse(statement.test).lower() if hasattr(ast, "unparse") else ""
+            for name_node in ast.walk(statement.test):
+                if isinstance(name_node, ast.Name):
+                    if any(token in test_text for token in ("== 0", "!= 0", "len(", "not ", "<= 0")):
+                        names.add(name_node.id)
+    return names
+
+
+def division_denominator_risk(node, function_node):
+    denominator = node.right
+    line = getattr(node, "lineno", None)
+    if line is None:
+        return None
+    guarded = active_guard_names(function_node.body, line)
+    if isinstance(denominator, ast.Constant):
+        return None
+    if isinstance(denominator, ast.Name):
+        if denominator.id in guarded:
+            return None
+        return (
+            "validation",
+            "MEDIUM",
+            "Potential unguarded divisor",
+            f"Function `{function_node.name}` divides by `{denominator.id}` without an earlier visible zero guard.",
+            "A zero value can raise ZeroDivisionError or violate the caller's expected error contract.",
+            "Validate the divisor before division and raise the project-specific controlled exception while preserving valid inputs.",
+        )
+    if isinstance(denominator, ast.Call) and dotted_name(denominator.func) == "len" and denominator.args:
+        arg = denominator.args[0]
+        collection_name = arg.id if isinstance(arg, ast.Name) else "collection"
+        if collection_name in guarded:
+            return None
+        return (
+            "validation",
+            "MEDIUM",
+            "Potential empty-collection divisor",
+            f"Function `{function_node.name}` divides by len({collection_name}) without an earlier visible empty-collection guard.",
+            "An empty collection can create a zero divisor and terminate the path unexpectedly.",
+            "Validate that the collection is not empty before division and preserve the documented error behavior for invalid input.",
+        )
+    return None
+
+
 def add_finding(
     findings,
     file_path,
@@ -839,6 +893,23 @@ def analyze_python_source(source_file, findings, warnings):
                     "State can leak between calls and create difficult-to-reproduce defects.",
                     "Use None as the default and create the mutable object inside the function.",
                 )
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Div):
+                    risk = division_denominator_risk(inner, node)
+                    if risk:
+                        category, severity, title, evidence_text, impact, recommendation = risk
+                        add_finding(
+                            findings,
+                            path,
+                            getattr(inner, "lineno", None),
+                            category,
+                            severity,
+                            "MEDIUM",
+                            title,
+                            evidence_text,
+                            impact,
+                            recommendation,
+                        )
 
         if isinstance(node, ast.ExceptHandler):
             if node.type is None:
@@ -1612,12 +1683,12 @@ def contract_linked_files(contract, request):
     return linked
 
 
-def extract_symbols(source_file):
+def source_symbol_ranges(source_file):
     if source_file is None:
         return []
     content = source_file.content
     path = source_file.path.lower()
-    symbols = []
+    ranges = []
     if path.endswith(".py"):
         try:
             tree = ast.parse(content)
@@ -1625,18 +1696,91 @@ def extract_symbols(source_file):
             return []
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                symbols.append(node.name)
+                start = getattr(node, "lineno", None)
+                end = getattr(node, "end_lineno", None) or start
+                if start:
+                    ranges.append((node.name, start, end))
     elif path.endswith(".java"):
-        for match in re.finditer(
-            r"\b(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>\[\], ?.]*)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
-            content,
-        ):
-            name = match.group(1)
-            if name not in symbols:
-                symbols.append(name)
+        lines = content.splitlines()
         class_match = re.search(r"\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)", content)
         if class_match:
-            symbols.insert(0, class_match.group(1))
+            line = content.count("\n", 0, class_match.start()) + 1
+            ranges.append((class_match.group(1), line, len(lines) or line))
+        method_pattern = re.compile(
+            r"\b(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>\[\], ?.]*)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\("
+        )
+        for match in method_pattern.finditer(content):
+            name = match.group(1)
+            line = content.count("\n", 0, match.start()) + 1
+            if name not in {item[0] for item in ranges}:
+                ranges.append((name, line, line))
+    return ranges[:24]
+
+
+def extract_symbols(source_file):
+    return [name for name, _, _ in source_symbol_ranges(source_file)][:12]
+
+
+def symbols_at_lines(source_file, lines):
+    if source_file is None:
+        return []
+    wanted = [int(line) for line in lines if isinstance(line, int) or str(line).isdigit()]
+    if not wanted:
+        return []
+    ranges = source_symbol_ranges(source_file)
+    matched = []
+    for line in wanted:
+        for name, start, end in ranges:
+            if start <= line <= end and name not in matched:
+                matched.append(name)
+    return matched[:12]
+
+
+def contract_linked_locations(contract, request):
+    source_map = source_finding_map(request)
+    runtime_map = runtime_group_map(request)
+    locations = []
+
+    def add(path, line):
+        cleaned_path = clean_text(path, 500)
+        if not cleaned_path:
+            return
+        try:
+            cleaned_line = int(line) if line is not None else None
+        except (TypeError, ValueError):
+            cleaned_line = None
+        item = (cleaned_path, cleaned_line)
+        if item not in locations:
+            locations.append(item)
+
+    for ref in contract.finding_refs:
+        source_finding = source_map.get(ref)
+        if source_finding:
+            add(source_finding.get("file_path"), source_finding.get("line"))
+        runtime_group = runtime_map.get(ref)
+        if runtime_group:
+            for evidence in normalize_list(runtime_group.get("evidence")):
+                if isinstance(evidence, dict):
+                    add(evidence.get("application_file"), evidence.get("application_line"))
+    return locations
+
+
+def contract_linked_symbols(contract, request, linked_files=None):
+    files = known_source_files(request)
+    linked_files = linked_files or contract_linked_files(contract, request)
+    locations = contract_linked_locations(contract, request)
+    symbols = []
+    for path in linked_files:
+        lines = [line for file_path, line in locations if file_path == path and line]
+        for symbol in symbols_at_lines(files.get(path), lines):
+            if symbol not in symbols:
+                symbols.append(symbol)
+    if symbols:
+        return symbols[:12]
+    for path in linked_files:
+        for symbol in extract_symbols(files.get(path)):
+            if symbol not in symbols:
+                symbols.append(symbol)
     return symbols[:12]
 
 
@@ -1801,11 +1945,7 @@ def grounded_current_knowledge_for_contract(contract):
 def deterministic_repair_item(contract, request, index, reason=None):
     linked_files = contract_linked_files(contract, request)
     source_files = known_source_files(request)
-    symbols = []
-    for path in linked_files:
-        for symbol in extract_symbols(source_files.get(path)):
-            if symbol not in symbols:
-                symbols.append(symbol)
+    symbols = contract_linked_symbols(contract, request, linked_files)
 
     testing_only = contract_is_testing_only(contract)
     current_required = grounded_current_knowledge_for_contract(contract)
@@ -1897,12 +2037,7 @@ def validate_repair_plan(plan, request, contracts):
         if contract_is_testing_only(contract):
             target_files = []
 
-        source_files = known_source_files(request)
-        target_symbols = []
-        for path in target_files:
-            for symbol in extract_symbols(source_files.get(path)):
-                if symbol not in target_symbols:
-                    target_symbols.append(symbol)
+        target_symbols = contract_linked_symbols(contract, request, target_files)
 
         current_required = grounded_current_knowledge_for_contract(contract)
         normalized.append(

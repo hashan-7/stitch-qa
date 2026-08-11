@@ -12,6 +12,10 @@ ENV REPAIR_MODEL_MAX_INPUT_TOKENS=2200
 ENV MODEL_THREADS=2
 ENV MODEL_THREADS_BATCH=2
 ENV MODEL_USE_MMAP=true
+ENV HF_MODEL_REPO=Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF
+ENV HF_MODEL_FILE=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+ENV HF_MODEL_REVISION=main
+ENV MODEL_QUANTIZATION=Q4_K_M
 
 RUN useradd -m -u 1000 user && \
     mkdir -p /home/user/app /home/user/.cache/huggingface/hub && \
