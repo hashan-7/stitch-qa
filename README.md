@@ -4,174 +4,294 @@
 [![GitHub Actions](https://github.com/hashan-7/stitch-qa/actions/workflows/stitch-qa.yml/badge.svg)](https://github.com/hashan-7/stitch-qa/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-AI-powered QA assistant for Java Maven and Python projects.
+**Stitch QA** is an AI-assisted pre-deployment QA tool for Python and Java Maven projects.
 
-Stitch QA scans your project, detects the build structure, runs tests, analyzes execution logs, and provides AI-powered repair suggestions and code-level guidance through a simple CLI.
+It scans a project, detects the supported execution profile, runs tests when possible, analyzes runtime evidence, reviews source-code risks, prepares repair guidance, and generates professional Markdown and JSON QA reports. Stitch QA is designed to support developer review before deployment; it does **not** automatically modify source code.
 
-## Features
+---
 
-| Feature | V1 | V2 |
+## Why Stitch QA?
+
+Most projects fail before deployment for predictable reasons: missing validation, failing tests, unclear logs, weak test coverage, unsupported runtime environments, and incomplete release evidence.
+
+Stitch QA helps developers quickly answer:
+
+- What type of project is this?
+- Can the test workflow run safely?
+- Did the test suite pass or fail?
+- What is the most likely root cause?
+- Which files and symbols are affected?
+- Is this safe to release?
+- What should be fixed first?
+- How should the fix be verified?
+
+---
+
+## Current Capabilities
+
+| Area | Capability |
+| --- | --- |
+| Project discovery | Detects supported Python and Java Maven projects |
+| Python execution | Runs pytest-based projects when compatible tests are found |
+| Java execution | Runs Maven test workflows when Maven or Maven Wrapper is available |
+| Source quality review | Reviews supported application source files for evidence-backed risks |
+| Runtime evidence analysis | Parses structured test evidence where available and explains failures |
+| Repair planning | Produces prioritized, evidence-linked repair contracts |
+| Repair assurance | Provides code-level implementation guidance without applying patches |
+| Unsupported projects | Exits cleanly for unsupported project types without fake analysis |
+| Reports | Generates Markdown and JSON reports |
+| Safety | Keeps Auto Apply disabled and requires manual developer review |
+
+---
+
+## Supported Project Types
+
+| Project Type | Status | Notes |
 | --- | --- | --- |
-| Java Maven detection and execution | Supported | Supported |
-| Maven Wrapper detection | Supported | Supported |
-| Python detection and pytest execution | Not supported | Supported |
-| AI log analysis | Supported | Supported |
-| AI repair suggestions | Supported | Supported |
-| AI code guidance | Supported | Supported |
-| Unsupported language handling | Not supported | Supported |
-| OS-aware Maven Wrapper | Not supported | Supported |
-| Docker support | Not supported | Supported |
-| GitHub Actions integration | Not supported | Supported |
-| Markdown report | Supported | Supported |
-| JSON report | Supported | Supported |
-| Single code snippet analysis | Supported | Supported |
+| Python + pytest | Supported | Detects pytest-compatible tests and runs `python -m pytest` |
+| Python source-only | Supported with limited runtime evidence | Source review still runs; runtime QA is skipped when no compatible tests are found |
+| Java Maven | Supported | Uses Maven or Maven Wrapper when available |
+| PHP Composer | Planned | Detected and skipped cleanly in the current version |
+| Java Gradle | Planned | Not executed in the current version |
+| Node.js / TypeScript | Planned | Not executed in the current version |
+| Go | Planned | Not executed in the current version |
+| Rust | Planned | Not executed in the current version |
+| C# .NET | Planned | Not executed in the current version |
+
+---
+
+## How the QA Flow Works
+
+```text
+Project folder
+    ↓
+Project scanner
+    ↓
+Execution profile detection
+    ↓
+Source Quality Intelligence Analyst
+    ↓
+Validated test execution, when supported and available
+    ↓
+Runtime Quality Intelligence Analyst
+    ↓
+Defect Resolution Intelligence Analyst
+    ↓
+Repair Assurance Intelligence Analyst
+    ↓
+Markdown + JSON QA reports
+```
+
+---
+
+## AI Agent Architecture
+
+| Agent | Role | Output |
+| --- | --- | --- |
+| Source Quality Intelligence Analyst | Reviews supported application source files for source-level risks | Source findings, risk level, release recommendation |
+| Runtime Quality Intelligence Analyst | Analyzes validated runtime and test evidence | Runtime status, root cause groups, release gate |
+| Defect Resolution Intelligence Analyst | Converts confirmed findings into prioritized repair contracts | Repair priority, objective, strategy, verification guidance |
+| Repair Assurance Intelligence Analyst | Converts repair contracts into code-level guidance | Target files, target symbols, change boundary, verification plan |
+
+---
 
 ## Installation
 
-### Local CLI
+### Install from GitHub
 
 ```bash
 pip install git+https://github.com/hashan-7/stitch-qa.git
 ```
 
-Or clone and install locally:
+### Install locally for development
 
 ```bash
 git clone https://github.com/hashan-7/stitch-qa.git
-cd stitch-qa/cli
-python -m venv venv
-source venv/bin/activate  # Windows: .\venv\Scripts\activate
-pip install -e .
-cd ..
+cd stitch-qa
+python -m venv .venv
+
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+python -m pip install -e ./cli
 ```
 
-### Docker
-
-```bash
-docker run --rm -v ${PWD}:/project hashan-7/stitch-qa:v2 scan /project --run --analyze --repair --code-fix
-```
+---
 
 ## Quick Start
 
-![Stitch QA CLI Demo](https://raw.githubusercontent.com/hashan-7/stitch-qa/dev/docs/images/cli-demo.png)
-
-### Scan a Java Maven project
-
-```bash
-stitch scan demo --run --analyze --repair --code-fix
-```
-
-### Scan a Python project
-
-```bash
-stitch scan demo-python --run --analyze --repair --code-fix
-```
-
-### Scan only
+### Scan a project only
 
 ```bash
 stitch scan .
 ```
 
-### Analyze a code snippet
+### Scan and run tests
 
 ```bash
-stitch analyze-code
+stitch scan . --run
 ```
 
-## What Stitch QA Does
+### Scan, run, and analyze test evidence
 
-```text
-Project Folder
-     ↓
-Scanner (language detection)
-     ↓
-Executor (OS-aware test runner)
-     ↓
-Log Agent (analyzes logs and finds root cause)
-     ↓
-Repair Agent (suggests safe repair actions)
-     ↓
-Code Agent (provides code-level guidance)
-     ↓
-Report (Markdown + JSON)
+```bash
+stitch scan . --run --analyze
 ```
 
-## Supported Languages
+### Full QA flow with repair guidance
 
-| Language | Build Tool | Status |
-| --- | --- | --- |
-| Java Maven | Maven | Supported |
-| Python | pytest | Supported |
-| Java Gradle | Gradle | Planned |
-| Node.js | npm | Planned |
-| PHP | Composer | Planned |
-| TypeScript | tsc | Planned |
-| Go | go.mod | Planned |
-| Rust | Cargo | Planned |
-| C# .NET | .NET | Planned |
+```bash
+stitch scan . --run --analyze --repair
+```
 
-## Coming Soon Handling
+---
 
-When Stitch QA detects a language that is not yet supported, it will skip execution cleanly and generate a report that explains the reason.
+## Example: Python Project with Failing Tests
 
-Example:
+```bash
+stitch scan test-project --run --analyze --repair
+```
+
+Expected high-level result:
 
 ```text
-Project Type: PHP Project
+Detected Type: Python Project
+Execution Profile: PYTHON_PYTEST
+Test Summary: Total=4, Passed=2, Failed=2
+Failure Origin: APPLICATION_DEFECT
+Final QA Status: BLOCK_RELEASE
+```
+
+Stitch QA groups related runtime failures with source-quality findings and prepares a focused repair contract instead of producing broad or unrelated recommendations.
+
+---
+
+## Example: Python Source-Only Project
+
+```bash
+stitch scan test-project-python-source-only --run --analyze --repair
+```
+
+Expected high-level result:
+
+```text
+Detected Type: Python Project
+Has Tests: False
+Runtime Quality Intelligence: NOT_RUN
+QA Evidence Completeness: SOURCE_ONLY
+Final QA Status: QA_INCOMPLETE
+```
+
+When no compatible tests are detected, Stitch QA does not invent runtime results. It still performs source review and provides safe guidance based on available evidence.
+
+---
+
+## Example: Java Maven Project
+
+```bash
+stitch scan test-project-maven --run --analyze --repair
+```
+
+If Maven is unavailable, Stitch QA classifies the issue as an environment blocker:
+
+```text
+Failure Origin: ENVIRONMENT
+Required Action: Install Maven or provide a valid Maven Wrapper
+Guidance Status: NO_CODE_CHANGE_REQUIRED
+Final QA Status: QA_INCOMPLETE
+```
+
+Stitch QA does not recommend application source-code changes for environment-only failures.
+
+---
+
+## Example: Unsupported Project
+
+```bash
+stitch scan test-project-php-unsupported --run --analyze --repair
+```
+
+Expected high-level result:
+
+```text
+Detected Type: PHP Composer Project
 Skipping execution. This project type is not yet supported in this version.
-PHP support is planned for a future version.
-Supported: Java Maven (pom.xml), Python (requirements.txt / pyproject.toml)
+Supported: Java Maven, Python
 Exiting cleanly with exit code 0.
 ```
 
-![Unsupported Language Handling](https://raw.githubusercontent.com/hashan-7/stitch-qa/dev/docs/images/unsupported-demo.png)
+Unsupported project handling is intentionally safe. Stitch QA does not run fake Agent 1, Agent 2, or Agent 3 analysis for unsupported languages.
+
+---
 
 ## Reports
 
-After a full scan, Stitch QA generates:
+After a scan, Stitch QA generates reports inside the scanned project folder:
 
-- `STITCH_QA_REPORT.md`
-- `STITCH_QA_REPORT.json`
+```text
+STITCH_QA_REPORT.md
+STITCH_QA_REPORT.json
+```
 
-Reports include:
+Reports may include:
 
 - Project summary
+- Detected project type
 - Static mapping
-- Execution result
-- Log Agent analysis
-- Repair Agent suggestions
-- Code Agent guidance
-- Evidence logs
-- Final QA status
+- Source review findings
+- Test execution result
+- Runtime root-cause analysis
+- Repair contracts
+- Repair assurance guidance
+- Final QA decision
+- Evidence and limitations
 
-## AI Agents
+---
 
-| Agent | Purpose |
+## Final QA Status Values
+
+| Status | Meaning |
 | --- | --- |
-| Log Agent | Log analysis, summarization, root cause identification |
-| Repair Agent | Repair suggestions, risk assessment, next actions |
-| Code Agent | Code-level guidance, targeted fixes, verification steps |
+| `READY_WITH_CAUTION` | No blocking issue was found from available evidence, but this does not prove complete correctness |
+| `REVIEW_REQUIRED` | A risk or incomplete signal requires developer review |
+| `QA_INCOMPLETE` | Runtime or validation evidence is incomplete |
+| `BLOCK_RELEASE` | Confirmed failure evidence blocks release until fixed and verified |
 
-## Agent URLs
-
-- Log Agent: https://hashan-77-stitch-qa-log-agent.hf.space
-- Repair Agent: https://hashan-77-stitch-qa-repair-agent.hf.space
-- Code Agent: https://hashan-77-stitch-qa-code-agent.hf.space
+---
 
 ## Docker Usage
 
+Build a local Docker image:
+
 ```bash
 docker build -t stitch-qa:local .
-docker run --rm -v ${PWD}/demo:/project stitch-qa:local scan /project --run --analyze --repair --code-fix
 ```
 
-## GitHub Actions Integration
+Run Stitch QA against a project folder:
 
-Add `.github/workflows/stitch-qa.yml`:
+```bash
+docker run --rm -v "${PWD}:/project" stitch-qa:local scan /project --run --analyze --repair
+```
+
+On Windows PowerShell:
+
+```powershell
+docker run --rm -v "${PWD}:/project" stitch-qa:local scan /project --run --analyze --repair
+```
+
+---
+
+## GitHub Actions Usage
+
+Stitch QA can run inside a GitHub Actions workflow.
 
 ```yaml
 name: Stitch QA Scan
+
 on:
   push:
     branches: [dev, main]
@@ -180,76 +300,133 @@ on:
   workflow_dispatch:
 
 jobs:
-  qa-scan:
+  stitch-qa:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Run Stitch QA
         uses: ./
         with:
           project-path: "."
-      - name: Upload Reports
+          run-tests: "true"
+          analyze: "true"
+          repair: "true"
+
+      - name: Upload Stitch QA reports
         uses: actions/upload-artifact@v4
         with:
           name: stitch-qa-reports
-          path: STITCH_QA_REPORT.*
+          path: "**/STITCH_QA_REPORT.*"
 ```
 
-![GitHub Actions CI](https://raw.githubusercontent.com/hashan-7/stitch-qa/dev/docs/images/gh-actions.png)
+---
 
 ## Basic Commands
 
 | Command | Description |
 | --- | --- |
-| `stitch scan .` | Scan project only |
-| `stitch scan . --run` | Scan and run tests |
-| `stitch scan . --run --analyze` | Scan, run, and analyze logs |
-| `stitch scan . --run --analyze --repair` | Scan, run, analyze, and suggest repairs |
-| `stitch scan . --run --analyze --repair --code-fix` | Full QA flow |
-| `stitch analyze-code` | Analyze a code snippet manually |
+| `stitch scan .` | Scan the project and show detected structure |
+| `stitch scan . --run` | Scan and run the supported test command |
+| `stitch scan . --run --analyze` | Scan, run tests, and analyze runtime evidence |
+| `stitch scan . --run --analyze --repair` | Run the full QA flow and produce repair guidance |
+| `stitch analyze-code` | Analyze a single code snippet manually |
+
+---
 
 ## Requirements
 
-| Requirement | Version |
+| Requirement | Version / Notes |
 | --- | --- |
 | Python | 3.10+ |
-| Java | 17+ |
-| Maven | 3.6+ or Maven Wrapper |
+| Java | 17+ for Java projects |
+| Maven | 3.6+ or Maven Wrapper for Java Maven execution |
 | Docker | Optional |
-| Git | Required for installation |
+| Git | Required for source installation |
+| pytest | Required inside Python projects that need runtime test execution |
 
-## Safety
+---
 
-Stitch QA does not automatically modify your source code. All AI suggestions are provided for manual review only.
+## Safety Guarantees
 
-## Development Workflow
+Stitch QA is designed as a QA guidance tool, not an automatic code modifier.
+
+- It does not automatically change project source code.
+- Auto Apply remains disabled.
+- AI-generated guidance must be reviewed by a developer.
+- Unsupported project types are skipped cleanly.
+- Environment failures are not mixed with application defects.
+- Reports include limitations when evidence is incomplete.
+
+---
+
+## Development Checks
+
+Recommended local validation commands:
 
 ```bash
-stitch scan demo --run --analyze --repair --code-fix
-stitch scan demo-python --run --analyze --repair --code-fix
-mkdir demo-php && echo "<?php echo 'Hello'; ?>" > demo-php/index.php
-stitch scan demo-php --run --analyze --repair --code-fix
+python -m pytest agents/code-agent/tests/test_code_agent.py agents/repair-agent/tests/test_repair_agent.py cli/tests/test_repair_guidance_v2.py -q
+
+stitch scan test-project --run --analyze --repair
+stitch scan test-project-python-source-only --run --analyze --repair
+stitch scan test-project-maven --run --analyze --repair
+stitch scan test-project-php-unsupported --run --analyze --repair
 ```
 
-## Version Roadmap
+Expected acceptance behavior:
 
-| Version | Focus | Status |
-| --- | --- | --- |
-| v1.0.0 | Java Maven CLI-first QA assistant | Released |
-| v1.0.1 | Updated HF agent URLs | Released |
-| v2.0.0 | Language UX + Docker + GitHub Actions + model upgrades | Released |
-| v2.1.0 | Gradle support | Planned |
-| v3.0.0 | Node.js, PHP, TypeScript, Go, Rust, C# | Planned |
+| Fixture | Expected Result |
+| --- | --- |
+| `test-project` | Python pytest failure is detected; final status is `BLOCK_RELEASE` |
+| `test-project-python-source-only` | Runtime QA is skipped; final status is `QA_INCOMPLETE` |
+| `test-project-maven` | Maven-unavailable case is classified as `ENVIRONMENT` |
+| `test-project-php-unsupported` | Unsupported PHP project exits cleanly with code 0 |
+
+---
+
+## Roadmap
+
+| Area | Status |
+| --- | --- |
+| Python pytest support | Available |
+| Java Maven support | Available |
+| Docker execution support | Available |
+| GitHub Actions support | Available |
+| Unsupported project clean-exit UX | Available |
+| Gradle support | Planned |
+| Node.js / TypeScript support | Planned |
+| PHP Composer execution support | Planned |
+| Go, Rust, and .NET support | Planned |
+| Patch generation with guarded validation | Future research |
+
+---
+
+## Screenshots
+
+Keep screenshots only when they match the current CLI output and are stored in the repository.
+
+Recommended image usage:
+
+```markdown
+![Stitch QA CLI Output](docs/images/cli-demo.png)
+```
+
+Avoid screenshots that show outdated agent names, old commands, removed flags, broken links, private tokens, local machine paths, or temporary debug output.
+
+---
 
 ## License
 
-MIT License. See `LICENSE` for details.
+This project is licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
+
+---
 
 ## Acknowledgments
 
-- FastAPI
-- Hugging Face Transformers
-- Click
-- Rich
+Stitch QA is built with Python and open-source developer tooling, including FastAPI, Click, Rich, pytest, and related ecosystem packages.
+
+---
 
 <div align="center">Developed with 💜 by H7</a></div>
