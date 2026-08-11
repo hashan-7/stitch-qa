@@ -802,3 +802,73 @@ def test_model_service_repair_mode_uses_json_object_without_schema():
 
     assert json.loads(text) == {"c": "HIGH", "x": []}
     assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_model_service_recovers_json_object_from_wrapped_output():
+    payload = 'Here is the JSON:\n```json\n{"c":"HIGH","x":[]}\n```'
+    captured = {}
+
+    class FakeModel:
+        def reset(self):
+            return None
+
+        def tokenize(self, value, add_bos=False, special=True):
+            return list(range(max(1, len(value) // 8)))
+
+        def create_chat_completion(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": payload},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+
+    service = agent3.ModelService()
+    service.model = FakeModel()
+    service.model_name = service.primary_model
+    service.max_input_tokens = 10000
+    text = service.generate_json(
+        [
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": "Return repair guidance."},
+        ],
+        agent3.REPAIR_AI_SCHEMA,
+        200,
+        "repair-assurance",
+        2200,
+        False,
+    )
+
+    assert json.loads(text) == {"c": "HIGH", "x": []}
+    assert service.last_generation["json_recovered"] is True
+
+
+def test_current_knowledge_ignores_generic_dependency_boundary_word():
+    contract = agent3.RepairContractInput.model_validate(
+        {
+            "contract_id": "STITCH-RC-001",
+            "finding_refs": ["RQI-001"],
+            "repair_objective": "Restore local ValueError behavior.",
+            "repair_strategy": "Add input validation at the local boundary.",
+            "change_boundary": "Limit the change to the component, input boundary, dependency, or configuration directly represented by this finding.",
+            "protected_behavior": "Preserve valid-input behavior.",
+        }
+    )
+
+    assert agent3.grounded_current_knowledge_for_contract(contract) is False
+
+
+def test_current_knowledge_requires_real_external_version_context():
+    contract = agent3.RepairContractInput.model_validate(
+        {
+            "contract_id": "STITCH-RC-001",
+            "finding_refs": ["RQI-001"],
+            "repair_objective": "Update a dependency after checking version compatibility.",
+            "repair_strategy": "Review current trusted documentation and dependency version compatibility before changing the package.",
+        }
+    )
+
+    assert agent3.grounded_current_knowledge_for_contract(contract) is True

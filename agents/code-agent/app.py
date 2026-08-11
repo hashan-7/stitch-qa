@@ -490,6 +490,53 @@ class ModelService:
         except json.JSONDecodeError:
             return False
 
+    def _extract_json_object(self, text):
+        candidate = str(text or "").strip()
+        if not candidate:
+            return None
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE).strip()
+            candidate = re.sub(r"\s*```$", "", candidate).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass
+
+        start = candidate.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+
+        for index in range(start, len(candidate)):
+            char = candidate[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    extracted = candidate[start : index + 1].strip()
+                    try:
+                        json.loads(extracted)
+                        return extracted
+                    except json.JSONDecodeError:
+                        return None
+        return None
+
     def _reset_inference_state(self, model):
         reset = getattr(model, "reset", None)
         if callable(reset):
@@ -584,10 +631,16 @@ class ModelService:
                     )
                 if not text:
                     raise RuntimeError("Agent 3 model returned an empty response.")
-                try:
-                    json.loads(text)
-                except json.JSONDecodeError as error:
-                    raise RuntimeError("Agent 3 JSON-constrained generation returned invalid JSON.") from error
+
+                json_text = self._extract_json_object(text)
+                if not json_text:
+                    raise RuntimeError("Agent 3 JSON-constrained generation returned invalid JSON.")
+                if json_text != text:
+                    self.last_generation["json_recovered"] = True
+                    text = json_text
+                else:
+                    self.last_generation["json_recovered"] = False
+
                 if finish_reason == "length":
                     raise RuntimeError(
                         "Agent 3 model reached the output token limit before completing the structured response."
@@ -1939,7 +1992,45 @@ def parse_repair_model_output(text):
 
 def grounded_current_knowledge_for_contract(contract):
     text = contract_text(contract)
-    return any(indicator in text for indicator in CURRENT_KNOWLEDGE_INDICATORS)
+    if not text:
+        return False
+
+    explicit_current_signals = (
+        "current trusted documentation",
+        "current documentation",
+        "current framework",
+        "current vendor",
+        "current security advisory",
+        "security advisory",
+        "cve",
+        "deprecation",
+        "deprecated",
+        "vendor guidance",
+        "vendor documentation",
+        "release notes",
+        "migration guide",
+        "version compatibility",
+        "dependency version",
+        "package version",
+        "plugin version",
+        "jdk version",
+        "framework release",
+        "breaking change",
+    )
+    if any(signal in text for signal in explicit_current_signals):
+        return True
+
+    contextual_pairs = (
+        ("dependency", "version"),
+        ("dependency", "compatibility"),
+        ("dependency", "upgrade"),
+        ("dependency", "release"),
+        ("framework", "version"),
+        ("framework", "compatibility"),
+        ("plugin", "compatibility"),
+        ("jdk", "compatibility"),
+    )
+    return any(first in text and second in text for first, second in contextual_pairs)
 
 
 def deterministic_repair_item(contract, request, index, reason=None):
@@ -2333,3 +2424,4 @@ def suggest_code_fix(request: RepairAssuranceRequest):
     if request.repair_plan:
         return RepairAssuranceResponse.model_validate(repair_assurance_request(request))
     return RepairAssuranceResponse.model_validate(legacy_repair_assurance(request))
+

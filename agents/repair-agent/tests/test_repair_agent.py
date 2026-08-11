@@ -279,7 +279,8 @@ def test_endpoint_falls_back_safely_when_llm_fails(monkeypatch):
     result = agent2.suggest_repair(request)
     assert result.mode == "deterministic-fallback"
     assert result.llm_error is not None
-    assert len(result.stitch_repair_contracts) == 2
+    assert len(result.stitch_repair_contracts) == 1
+    assert result.stitch_repair_contracts[0].finding_refs == ["RQI-001", "SRC-001"]
     assert result.auto_apply is False
 
 
@@ -869,3 +870,59 @@ def test_prompt_distinguishes_repair_risk_from_defect_severity():
     assert "keep application source code outside the repair boundary" in system_prompt
     assert "for missing-tests findings" in system_prompt
     assert "do not propose production-code changes solely to create tests" in system_prompt
+
+
+def test_fallback_correlates_runtime_and_source_findings():
+    request = request_with_findings()
+    result = agent2.build_fallback_plan(
+        request,
+        agent2.collect_locked_findings(request),
+        llm_error="invalid JSON",
+    )
+
+    assert result["mode"] == "deterministic-fallback"
+    assert len(result["stitch_repair_contracts"]) == 1
+    contract = result["stitch_repair_contracts"][0]
+    assert contract["finding_refs"] == ["RQI-001", "SRC-001"]
+    assert contract["priority"] == "P1"
+    assert "app.py:10" in contract["change_boundary"]
+    assert result["current_knowledge_required"] is False
+
+
+def test_model_service_recovers_wrapped_json_response():
+    payload = 'Repair plan:\n```json\n' + json.dumps(valid_plan()) + '\n```'
+
+    class FakeModel:
+        def tokenize(self, value, add_bos=False, special=True):
+            return list(range(max(1, len(value) // 8)))
+
+        def create_chat_completion(self, **kwargs):
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": payload},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+
+    service = agent2.ModelService()
+    service.model = FakeModel()
+    service.model_name = service.primary_model
+    service.max_input_tokens = 10000
+    text = service.generate([{"role": "user", "content": "Return JSON."}])
+
+    assert json.loads(text)["x"][0]["f"] == ["RQI-001", "SRC-001"]
+    assert service.last_generation["json_recovered"] is True
+
+
+def test_generic_dependency_boundary_does_not_require_current_knowledge():
+    finding = {
+        "title": "Local input validation",
+        "category": "INPUT_VALIDATION",
+        "root_cause": "Boundary input reaches division.",
+        "impact": "Invalid local input fails.",
+        "recommendation": "Limit the change to the component, input boundary, dependency, or configuration directly represented by this finding.",
+    }
+
+    assert agent2.finding_may_need_current_knowledge(finding) is False

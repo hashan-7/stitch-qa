@@ -402,6 +402,53 @@ class ModelService:
         except json.JSONDecodeError:
             return False
 
+    def _extract_json_object(self, text):
+        candidate = str(text or "").strip()
+        if not candidate:
+            return None
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE).strip()
+            candidate = re.sub(r"\s*```$", "", candidate).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass
+
+        start = candidate.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+
+        for index in range(start, len(candidate)):
+            char = candidate[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    extracted = candidate[start : index + 1].strip()
+                    try:
+                        json.loads(extracted)
+                        return extracted
+                    except json.JSONDecodeError:
+                        return None
+        return None
+
     def generate(self, messages):
         self.last_generation = None
         model = self.load()
@@ -492,12 +539,16 @@ class ModelService:
             if not text:
                 raise RuntimeError("The configured Granite model returned an empty response.")
 
-            try:
-                json.loads(text)
-            except json.JSONDecodeError as error:
+            json_text = self._extract_json_object(text)
+            if not json_text:
                 raise RuntimeError(
                     "The configured Granite JSON-constrained generation returned invalid JSON."
-                ) from error
+                )
+            if json_text != text:
+                self.last_generation["json_recovered"] = True
+                text = json_text
+            else:
+                self.last_generation["json_recovered"] = False
 
             if finish_reason == "length":
                 raise RuntimeError(
@@ -1010,6 +1061,179 @@ def fallback_contract(finding, index, request):
         "status": "PENDING_VERIFICATION",
     }
 
+
+
+def finding_location_pairs(finding):
+    pairs = set()
+    for location in finding.get("locations", []):
+        match = FILE_LINE_PATTERN.search(str(location))
+        if not match:
+            continue
+        path = match.group("path").replace("\\", "/").lstrip("./")
+        try:
+            line = int(match.group("line"))
+        except (TypeError, ValueError):
+            continue
+        pairs.add((path, line))
+    return pairs
+
+
+def correlated_with_runtime(runtime_finding, source_finding):
+    if source_finding.get("source") != "source":
+        return False
+    runtime_pairs = finding_location_pairs(runtime_finding)
+    source_pairs = finding_location_pairs(source_finding)
+    if runtime_pairs and source_pairs and runtime_pairs.intersection(source_pairs):
+        return True
+
+    runtime_text = finding_semantic_text(runtime_finding)
+    source_text = finding_semantic_text(source_finding)
+    shared_terms = (
+        "input_validation",
+        "input validation",
+        "validation",
+        "zero divisor",
+        "division by zero",
+        "valueerror",
+        "boundary",
+    )
+    return any(term in runtime_text and term in source_text for term in shared_terms)
+
+
+def correlate_fallback_findings(findings):
+    runtime_findings = [
+        finding
+        for finding in findings
+        if finding.get("source") == "runtime"
+    ]
+    remaining = list(findings)
+    groups = []
+
+    for runtime_finding in runtime_findings:
+        if runtime_finding not in remaining:
+            continue
+        group = [runtime_finding]
+        remaining.remove(runtime_finding)
+        for finding in list(remaining):
+            if correlated_with_runtime(runtime_finding, finding):
+                group.append(finding)
+                remaining.remove(finding)
+        groups.append(group)
+
+    for finding in remaining:
+        groups.append([finding])
+
+    return groups
+
+
+def grouped_fallback_contract(findings, index, request):
+    primary = next(
+        (finding for finding in findings if finding.get("source") == "runtime"),
+        findings[0],
+    )
+    if any(finding.get("source") == "execution" for finding in findings):
+        priority = "P1"
+    elif (
+        str((request.runtime_evidence or {}).get("test_result") or "").upper() == "FAIL"
+        and any(finding.get("source") == "runtime" for finding in findings)
+    ):
+        priority = "P1"
+    elif (
+        str((request.runtime_analysis or {}).get("release_gate") or "").upper() == "BLOCK_RELEASE"
+        and any(finding.get("source") == "runtime" for finding in findings)
+    ):
+        priority = "P1"
+    else:
+        priority = max(
+            (severity_priority(finding.get("severity")) for finding in findings),
+            key=lambda item: PRIORITY_ORDER[item],
+            default="P3",
+        )
+
+    specialized = build_specialized_contract_semantics(
+        findings,
+        request,
+        priority,
+    )
+    if specialized:
+        return {
+            "contract_id": f"STITCH-RC-{index:03d}",
+            "finding_refs": [finding["ref"] for finding in findings],
+            "title": clean_text(primary.get("title"), 140),
+            "priority": priority,
+            "priority_reason": specialized["priority_reason"],
+            "repair_objective": specialized["repair_objective"],
+            "repair_strategy": specialized["repair_strategy"],
+            "change_boundary": specialized["change_boundary"],
+            "protected_behavior": specialized["protected_behavior"],
+            "side_effect_risk": specialized["side_effect_risk"],
+            "verification": specialized["verification"],
+            "done_condition": specialized["done_condition"],
+            "status": "PENDING_VERIFICATION",
+        }
+
+    objective = (
+        primary.get("recommendation")
+        or f"Resolve the confirmed condition represented by {', '.join(finding['ref'] for finding in findings)}."
+    )
+    strategy = (
+        primary.get("recommendation")
+        or "Apply the smallest targeted change that resolves the confirmed condition without broad unrelated changes."
+    )
+
+    runtime_analysis = request.runtime_analysis or {}
+    verification_steps = normalize_list(
+        runtime_analysis.get("verification_steps")
+    )
+    verification = (
+        " ".join(clean_text(item, 180) for item in verification_steps[:3])
+        if verification_steps
+        else "Confirm the affected behavior first, then run the relevant regression suite and verify no new failures."
+    )
+
+    locations = []
+    for finding in findings:
+        for location in finding.get("locations", []):
+            value = clean_text(location, 120)
+            if value and value not in locations:
+                locations.append(value)
+
+    if locations:
+        boundary = (
+            "Limit changes to the behavior represented by "
+            f"{', '.join(locations[:6])}; do not broaden the repair into unrelated files or refactoring."
+        )
+    else:
+        boundary = (
+            "Limit the change to the local input boundary or component directly represented by this evidence; do not broaden the repair into unrelated files or refactoring."
+        )
+
+    return {
+        "contract_id": f"STITCH-RC-{index:03d}",
+        "finding_refs": [finding["ref"] for finding in findings],
+        "title": clean_text(primary.get("title"), 140),
+        "priority": priority,
+        "priority_reason": (
+            f"{', '.join(finding['ref'] for finding in findings)} are correlated repair evidence for the same affected behavior and are prioritized from the validated QA impact."
+        ),
+        "repair_objective": clean_text(objective, 260),
+        "repair_strategy": clean_text(strategy, 320),
+        "change_boundary": clean_text(boundary, 500),
+        "protected_behavior": (
+            "Preserve behavior already shown to work outside the affected scope and avoid unrelated refactoring."
+        ),
+        "side_effect_risk": (
+            "MEDIUM"
+            if highest_risk(*(finding.get("severity") for finding in findings)) in {"CRITICAL", "HIGH", "MEDIUM"}
+            else "LOW"
+        ),
+        "verification": clean_text(verification, 300),
+        "done_condition": (
+            f"{', '.join(finding['ref'] for finding in findings)} no longer reproduce and the relevant regression checks complete without new failures."
+        ),
+        "status": "PENDING_VERIFICATION",
+    }
+
 def finding_may_need_current_knowledge(finding):
     text = " ".join(
         clean_text(finding.get(key), 500).lower()
@@ -1021,20 +1245,42 @@ def finding_may_need_current_knowledge(finding):
             "recommendation",
         )
     )
-    indicators = (
-        "dependency",
-        "version",
-        "deprecated",
-        "deprecation",
-        "compatibility",
-        "plugin",
-        "jdk",
-        "cve",
+    explicit_current_signals = (
+        "current trusted documentation",
+        "current documentation",
+        "current framework",
+        "current vendor",
+        "current security advisory",
         "security advisory",
-        "vendor",
-        "repository",
+        "cve",
+        "deprecation",
+        "deprecated",
+        "vendor guidance",
+        "vendor documentation",
+        "release notes",
+        "migration guide",
+        "version compatibility",
+        "dependency version",
+        "package version",
+        "plugin version",
+        "jdk version",
+        "framework release",
+        "breaking change",
     )
-    return any(indicator in text for indicator in indicators)
+    if any(signal in text for signal in explicit_current_signals):
+        return True
+    contextual_pairs = (
+        ("dependency", "version"),
+        ("dependency", "compatibility"),
+        ("dependency", "upgrade"),
+        ("dependency", "release"),
+        ("framework", "version"),
+        ("framework", "compatibility"),
+        ("plugin", "compatibility"),
+        ("jdk", "compatibility"),
+        ("repository", "advisory"),
+    )
+    return any(first in text and second in text for first, second in contextual_pairs)
 
 
 def finding_semantic_text(finding):
@@ -1203,9 +1449,10 @@ def build_fallback_plan(request, findings, mode="deterministic-fallback", llm_er
             "llm_error": llm_error,
         }
 
+    grouped_findings = correlate_fallback_findings(findings)
     contracts = [
-        fallback_contract(finding, index, request)
-        for index, finding in enumerate(findings, start=1)
+        grouped_fallback_contract(group, index, request)
+        for index, group in enumerate(grouped_findings, start=1)
     ]
     contracts = sort_and_renumber_contracts(contracts)
     highest_priority = max(
@@ -2145,3 +2392,4 @@ def suggest_repair(request: RepairRequest):
         )
 
     return RepairResponse.model_validate(result)
+
