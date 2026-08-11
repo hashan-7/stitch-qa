@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
 SPEC = importlib.util.spec_from_file_location("stitch_agent3_app", APP_PATH)
@@ -429,3 +431,124 @@ def test_model_service_uses_json_schema_and_stops_on_complete_json():
     assert captured["response_format"]["schema"] == agent3.SOURCE_AI_SCHEMA
     assert captured["stream"] is True
     assert service.last_generation["finish_reason"] == "json_complete"
+
+
+def test_model_service_resets_state_across_sequential_generations():
+    payload = json.dumps({"c": "HIGH", "x": []}, separators=(",", ":"))
+
+    class StatefulFakeModel:
+        def __init__(self):
+            self.dirty = False
+            self.reset_calls = 0
+            self.generation_calls = 0
+
+        def tokenize(self, value, add_bos=False, special=True):
+            return list(range(max(1, len(value) // 8)))
+
+        def reset(self):
+            self.reset_calls += 1
+            self.dirty = False
+
+        def create_chat_completion(self, **kwargs):
+            if self.dirty:
+                raise RuntimeError("stale inference context")
+            self.dirty = True
+            self.generation_calls += 1
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": payload},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+
+    model = StatefulFakeModel()
+    service = agent3.ModelService()
+    service.model = model
+    service.model_name = service.primary_model
+    service.max_input_tokens = 10000
+    messages = [
+        {"role": "system", "content": "Return JSON."},
+        {"role": "user", "content": "Review source."},
+    ]
+
+    first = service.generate_json(
+        messages,
+        agent3.SOURCE_AI_SCHEMA,
+        200,
+        "source-quality",
+    )
+    second = service.generate_json(
+        messages,
+        agent3.SOURCE_AI_SCHEMA,
+        200,
+        "repair-assurance",
+    )
+
+    assert json.loads(first) == {"c": "HIGH", "x": []}
+    assert json.loads(second) == {"c": "HIGH", "x": []}
+    assert model.generation_calls == 2
+    assert model.reset_calls == 4
+
+
+def test_model_service_resets_state_after_generation_failure():
+    payload = json.dumps({"c": "HIGH", "x": []}, separators=(",", ":"))
+
+    class RecoveringFakeModel:
+        def __init__(self):
+            self.dirty = False
+            self.reset_calls = 0
+            self.fail_next = True
+
+        def tokenize(self, value, add_bos=False, special=True):
+            return list(range(max(1, len(value) // 8)))
+
+        def reset(self):
+            self.reset_calls += 1
+            self.dirty = False
+
+        def create_chat_completion(self, **kwargs):
+            if self.dirty:
+                raise RuntimeError("stale inference context")
+            self.dirty = True
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("simulated generation failure")
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": payload},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+
+    model = RecoveringFakeModel()
+    service = agent3.ModelService()
+    service.model = model
+    service.model_name = service.primary_model
+    service.max_input_tokens = 10000
+    messages = [
+        {"role": "system", "content": "Return JSON."},
+        {"role": "user", "content": "Review source."},
+    ]
+
+    with pytest.raises(RuntimeError, match="simulated generation failure"):
+        service.generate_json(
+            messages,
+            agent3.SOURCE_AI_SCHEMA,
+            200,
+            "source-quality",
+        )
+
+    recovered = service.generate_json(
+        messages,
+        agent3.SOURCE_AI_SCHEMA,
+        200,
+        "repair-assurance",
+    )
+
+    assert json.loads(recovered) == {"c": "HIGH", "x": []}
+    assert model.reset_calls == 4
+

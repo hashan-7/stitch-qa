@@ -487,100 +487,109 @@ class ModelService:
         except json.JSONDecodeError:
             return False
 
+    def _reset_inference_state(self, model):
+        reset = getattr(model, "reset", None)
+        if callable(reset):
+            reset()
+
     def generate_json(self, messages, schema, max_new_tokens, task):
         self.last_generation = None
         model = self.load()
         with self.generation_lock:
-            input_tokens = self._count_tokens(model, messages)
-            if input_tokens > self.max_input_tokens:
-                raise RuntimeError(
-                    f"Agent 3 model input contains approximately {input_tokens} tokens, exceeding the configured limit of {self.max_input_tokens}."
+            self._reset_inference_state(model)
+            try:
+                input_tokens = self._count_tokens(model, messages)
+                if input_tokens > self.max_input_tokens:
+                    raise RuntimeError(
+                        f"Agent 3 model input contains approximately {input_tokens} tokens, exceeding the configured limit of {self.max_input_tokens}."
+                    )
+
+                started = time.monotonic()
+                parts = []
+                finish_reason = None
+                timed_out = False
+                first_content_seconds = None
+                stream = model.create_chat_completion(
+                    messages=messages,
+                    response_format={"type": "json_object", "schema": schema},
+                    max_tokens=max_new_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    seed=self.seed,
+                    stream=True,
                 )
 
-            started = time.monotonic()
-            parts = []
-            finish_reason = None
-            timed_out = False
-            first_content_seconds = None
-            stream = model.create_chat_completion(
-                messages=messages,
-                response_format={"type": "json_object", "schema": schema},
-                max_tokens=max_new_tokens,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                seed=self.seed,
-                stream=True,
-            )
+                try:
+                    for chunk in stream:
+                        elapsed = time.monotonic() - started
+                        choices = chunk.get("choices") or []
+                        if choices:
+                            choice = choices[0]
+                            delta = choice.get("delta") or {}
+                            content = delta.get("content")
+                            if content:
+                                if first_content_seconds is None:
+                                    first_content_seconds = elapsed
+                                parts.append(str(content))
+                                if self._json_complete("".join(parts)):
+                                    finish_reason = "json_complete"
+                                    break
+                            if choice.get("finish_reason"):
+                                finish_reason = str(choice.get("finish_reason"))
+                        if elapsed >= self.max_generation_seconds and not finish_reason:
+                            timed_out = True
+                            break
+                finally:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
 
-            try:
-                for chunk in stream:
-                    elapsed = time.monotonic() - started
-                    choices = chunk.get("choices") or []
-                    if choices:
-                        choice = choices[0]
-                        delta = choice.get("delta") or {}
-                        content = delta.get("content")
-                        if content:
-                            if first_content_seconds is None:
-                                first_content_seconds = elapsed
-                            parts.append(str(content))
-                            if self._json_complete("".join(parts)):
-                                finish_reason = "json_complete"
-                                break
-                        if choice.get("finish_reason"):
-                            finish_reason = str(choice.get("finish_reason"))
-                    if elapsed >= self.max_generation_seconds and not finish_reason:
-                        timed_out = True
-                        break
+                elapsed = time.monotonic() - started
+                text = "".join(parts).strip()
+                completion_tokens = self._count_text_tokens(model, text)
+                tokens_per_second = (
+                    round(completion_tokens / elapsed, 3)
+                    if elapsed > 0 and completion_tokens
+                    else 0.0
+                )
+                self.last_generation = {
+                    "backend": "llama.cpp",
+                    "task": task,
+                    "quantization": self.quantization,
+                    "input_tokens_approx": input_tokens,
+                    "completion_tokens": completion_tokens,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "first_content_seconds": (
+                        round(first_content_seconds, 3)
+                        if first_content_seconds is not None
+                        else None
+                    ),
+                    "tokens_per_second": tokens_per_second,
+                    "finish_reason": finish_reason,
+                    "timed_out": timed_out,
+                    "max_generation_seconds": self.max_generation_seconds,
+                    "max_new_tokens": max_new_tokens,
+                }
+
+                if timed_out:
+                    raise RuntimeError(
+                        "Agent 3 model exceeded the configured generation time limit "
+                        f"(generated_tokens={completion_tokens}, elapsed_seconds={elapsed:.3f}, "
+                        f"tokens_per_second={tokens_per_second:.3f})."
+                    )
+                if not text:
+                    raise RuntimeError("Agent 3 model returned an empty response.")
+                try:
+                    json.loads(text)
+                except json.JSONDecodeError as error:
+                    raise RuntimeError("Agent 3 JSON-constrained generation returned invalid JSON.") from error
+                if finish_reason == "length":
+                    raise RuntimeError(
+                        "Agent 3 model reached the output token limit before completing the structured response."
+                    )
+                return text
             finally:
-                close = getattr(stream, "close", None)
-                if callable(close):
-                    close()
-
-            elapsed = time.monotonic() - started
-            text = "".join(parts).strip()
-            completion_tokens = self._count_text_tokens(model, text)
-            tokens_per_second = (
-                round(completion_tokens / elapsed, 3)
-                if elapsed > 0 and completion_tokens
-                else 0.0
-            )
-            self.last_generation = {
-                "backend": "llama.cpp",
-                "task": task,
-                "quantization": self.quantization,
-                "input_tokens_approx": input_tokens,
-                "completion_tokens": completion_tokens,
-                "elapsed_seconds": round(elapsed, 3),
-                "first_content_seconds": (
-                    round(first_content_seconds, 3)
-                    if first_content_seconds is not None
-                    else None
-                ),
-                "tokens_per_second": tokens_per_second,
-                "finish_reason": finish_reason,
-                "timed_out": timed_out,
-                "max_generation_seconds": self.max_generation_seconds,
-                "max_new_tokens": max_new_tokens,
-            }
-
-            if timed_out:
-                raise RuntimeError(
-                    "Agent 3 model exceeded the configured generation time limit "
-                    f"(generated_tokens={completion_tokens}, elapsed_seconds={elapsed:.3f}, "
-                    f"tokens_per_second={tokens_per_second:.3f})."
-                )
-            if not text:
-                raise RuntimeError("Agent 3 model returned an empty response.")
-            try:
-                json.loads(text)
-            except json.JSONDecodeError as error:
-                raise RuntimeError("Agent 3 JSON-constrained generation returned invalid JSON.") from error
-            if finish_reason == "length":
-                raise RuntimeError(
-                    "Agent 3 model reached the output token limit before completing the structured response."
-                )
-            return text
+                self._reset_inference_state(model)
 
     def status(self):
         if not self.enabled:
