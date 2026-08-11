@@ -1,16 +1,20 @@
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1
-ENV CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DGGML_CCACHE=OFF"
-ENV FORCE_CMAKE=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
+ENV MODEL_CONTEXT_TOKENS=4096
+ENV MODEL_BATCH_TOKENS=128
+ENV MODEL_MAX_INPUT_TOKENS=3000
+ENV SOURCE_MODEL_MAX_NEW_TOKENS=320
+ENV REPAIR_MODEL_MAX_NEW_TOKENS=384
+ENV MODEL_THREADS=2
+ENV MODEL_THREADS_BATCH=2
+ENV MODEL_USE_MMAP=true
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    libopenblas-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u 1000 user
+RUN useradd -m -u 1000 user && \
+    mkdir -p /home/user/app /home/user/.cache/huggingface/hub && \
+    chown -R user:user /home/user
 
 USER user
 
@@ -22,9 +26,12 @@ ENV MODEL_CACHE_DIR=/home/user/.cache/huggingface/hub
 WORKDIR /home/user/app
 
 COPY --chown=user:user requirements.txt .
-
-RUN python -m pip install --user --no-cache-dir --upgrade pip && \
-    python -m pip install --user --no-cache-dir -r requirements.txt
+RUN python -m pip install --user --upgrade pip && \
+    python -m pip install --user \
+    --prefer-binary \
+    --only-binary=llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
+    -r requirements.txt
 
 COPY --chown=user:user app.py .
 
