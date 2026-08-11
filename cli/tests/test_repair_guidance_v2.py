@@ -27,6 +27,7 @@ def load_client():
     code_cli = types.ModuleType("stitch_cli.code_cli")
     code_cli.call_code_agent = lambda *args, **kwargs: None
     code_cli.call_source_review_agent = lambda *args, **kwargs: None
+    code_cli.call_repair_assurance_agent = lambda *args, **kwargs: None
     sys.modules["stitch_cli.code_cli"] = code_cli
 
     runtime_fallback = types.ModuleType("stitch_cli.runtime_fallback")
@@ -87,8 +88,13 @@ def sample_repair_response():
 
 def source_review_data(risk="LOW"):
     return {
+        "agent_id": "source-quality-analyst",
+        "display_name": "Source Quality Intelligence Analyst",
+        "agent_version": "3.0",
         "agent": "code-agent",
-        "mode": "rule-based",
+        "mode": "deterministic-validated",
+        "model": None,
+        "confidence": "HIGH",
         "status": "COMPLETED",
         "risk_level": risk,
         "release_recommendation": "READY_WITH_CAUTION",
@@ -285,21 +291,23 @@ def test_repair_contracts_drive_top_level_next_actions():
 def test_report_json_preserves_repair_contract_and_schema_version():
     reporter = load_reporter()
     repair_json = reporter.build_repair_agent_json(sample_repair_response())
-    assert reporter.REPORT_SCHEMA_VERSION == "3.2"
+    assert reporter.REPORT_SCHEMA_VERSION == "3.3"
     assert repair_json["display_name"] == "Defect Resolution Intelligence Analyst"
     assert repair_json["stitch_repair_contracts"][0]["done_condition"]
     assert repair_json["auto_apply"] is False
 
 
-def test_main_source_only_branch_can_invoke_agent2_from_source_findings():
+def test_main_source_only_branch_runs_agent2_and_repair_assurance():
     text = MAIN_PATH.read_text(encoding="utf-8")
     no_tests = text.index('if not static_map.get(\n        "has_tests"\n    ):')
     execution_else = text.index('    else:\n        console.print(\n            "\\n[bold magenta]"\n            "Execution Started"', no_tests)
     block = text[no_tests:execution_else]
-    assert "if repair:" in block
+    assert "if repair_requested:" in block
     assert "suggest_repair_with_agent" in block
+    assert "Repair Assurance Intelligence Analyst Started" in block
+    assert "suggest_code_fix_with_agent" in block
     assert "source_review_data" in block
-    assert "Runtime Quality Intelligence analysis and Agent 3 runtime code guidance" in block
+    assert "Runtime Quality Intelligence analysis was not run" in block
 
 
 def test_combined_risk_preserves_critical_runtime_risk():
@@ -334,3 +342,185 @@ def test_combined_risk_preserves_critical_runtime_risk():
     assert decision["status"] == "BLOCK_RELEASE"
     assert decision["risk_level"] == "CRITICAL"
     assert decision["runtime_gate"]["runtime_risk_level"] == "CRITICAL"
+
+def sample_repair_assurance_response():
+    return {
+        "agent_id": "repair-assurance-analyst",
+        "display_name": "Repair Assurance Intelligence Analyst",
+        "agent_version": "3.0",
+        "agent": "code-agent",
+        "mode": "ai-reasoned-validated",
+        "model": "ibm-granite/granite-4.1-3b-GGUF:Q4_K_M",
+        "status": "COMPLETED",
+        "confidence": "HIGH",
+        "risk_level": "MEDIUM",
+        "auto_apply": False,
+        "summary": "Prepared contract-bound repair assurance.",
+        "guidance": [
+            {
+                "guidance_id": "RAI-001",
+                "repair_contract_ref": "STITCH-RC-001",
+                "finding_refs": ["RQI-001"],
+                "target_files": ["app.py"],
+                "target_symbols": ["divide"],
+                "implementation_intent": "Restore the expected ValueError behavior.",
+                "code_level_approach": "Add narrow input validation before division.",
+                "change_boundary": "Input validation only.",
+                "protected_behavior": "Preserve valid calculations.",
+                "side_effect_considerations": "Avoid unrelated refactoring.",
+                "targeted_verification": "Rerun the failing test.",
+                "regression_verification": "Run the complete test suite.",
+                "suggested_patch": None,
+                "patch_validation_status": "NOT_GENERATED",
+                "current_knowledge_required": False,
+                "current_knowledge_reason": None,
+                "status": "PENDING_IMPLEMENTATION",
+            }
+        ],
+        "suggested_patch": None,
+        "verification": "Run targeted and regression verification.",
+        "current_knowledge_required": False,
+        "current_knowledge_reason": None,
+        "evidence_lineage": [
+            {
+                "repair_contract_ref": "STITCH-RC-001",
+                "finding_refs": ["RQI-001"],
+                "guidance_status": "LINKED",
+            }
+        ],
+        "shadow_validation_status": "NOT_RUN",
+        "warnings": [],
+        "limitations": ["No automatic project modification."],
+        "llm_metrics": {"completion_tokens": 120},
+        "llm_error": None,
+    }
+
+
+def test_repair_assurance_payload_uses_contract_linked_source_file(monkeypatch, tmp_path):
+    client = load_client()
+    captured = {}
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        "def divide(a, b):\n    return a / b\n",
+        encoding="utf-8",
+    )
+    scan_result = {
+        "project_type": "Python Project",
+        "project_path": str(project),
+        "source_review": {"source_files": ["app.py"]},
+    }
+    execution = passing_execution()
+    execution["success"] = False
+    execution["exit_code"] = 1
+    runtime = {
+        "root_cause_groups": [
+            {
+                "group_id": "RQI-001",
+                "evidence": [
+                    {
+                        "application_file": "app.py",
+                        "application_line": 2,
+                    }
+                ],
+            }
+        ]
+    }
+    review = source_review_data()
+    repair = sample_repair_response()
+
+    def fake_call(payload, code_agent_url):
+        captured["payload"] = payload
+        captured["url"] = code_agent_url
+        return {
+            "success": True,
+            "data": sample_repair_assurance_response(),
+            "error": None,
+        }
+
+    monkeypatch.setattr(client, "call_repair_assurance_agent", fake_call)
+    result = client.suggest_code_fix_with_agent(
+        "https://example.invalid",
+        scan_result,
+        execution,
+        runtime,
+        repair,
+        review,
+    )
+
+    assert result["success"] is True
+    payload = captured["payload"]
+    assert payload["repair_plan"]["stitch_repair_contracts"][0]["contract_id"] == "STITCH-RC-001"
+    assert payload["runtime_analysis"]["root_cause_groups"][0]["group_id"] == "RQI-001"
+    assert payload["source_review"]["agent_id"] == "source-quality-analyst"
+    assert payload["source_files"][0]["path"] == "app.py"
+    assert "return a / b" in payload["source_files"][0]["content"]
+    assert result["data"]["agent_id"] == "repair-assurance-analyst"
+    assert result["data"]["guidance"][0]["repair_contract_ref"] == "STITCH-RC-001"
+
+
+def test_repair_assurance_payload_supports_maven_when_main_file_is_absent(monkeypatch, tmp_path):
+    client = load_client()
+    project = tmp_path / "maven"
+    source = project / "src" / "main" / "java" / "demo"
+    source.mkdir(parents=True)
+    java_path = source / "Calculator.java"
+    java_path.write_text(
+        "package demo; public class Calculator { int add(int a, int b) { return a + b; } }",
+        encoding="utf-8",
+    )
+    scan_result = {
+        "project_type": "Java Maven Project",
+        "project_path": str(project),
+        "static_map": {"main_file": None},
+        "source_review": {
+            "source_files": ["src/main/java/demo/Calculator.java"]
+        },
+    }
+    execution = passing_execution()
+    execution["command"] = "mvn test"
+    repair = sample_repair_response()
+    repair["stitch_repair_contracts"][0]["finding_refs"] = ["SRC-001"]
+    review = source_review_data()
+    review["findings"][0]["id"] = "SRC-001"
+    review["findings"][0]["file_path"] = "src/main/java/demo/Calculator.java"
+    captured = {}
+
+    def fake_call(payload, code_agent_url):
+        captured["payload"] = payload
+        response = sample_repair_assurance_response()
+        response["guidance"][0]["finding_refs"] = ["SRC-001"]
+        response["guidance"][0]["target_files"] = [
+            "src/main/java/demo/Calculator.java"
+        ]
+        return {"success": True, "data": response, "error": None}
+
+    monkeypatch.setattr(client, "call_repair_assurance_agent", fake_call)
+    result = client.suggest_code_fix_with_agent(
+        "https://example.invalid",
+        scan_result,
+        execution,
+        None,
+        repair,
+        review,
+    )
+
+    assert result["success"] is True
+    assert captured["payload"]["source_files"][0]["path"] == "src/main/java/demo/Calculator.java"
+
+
+def test_reporter_preserves_agent3_professional_contracts():
+    reporter = load_reporter()
+    source_json = reporter.build_source_review_json(source_review_data())
+    assurance_json = reporter.build_code_agent_json(
+        sample_repair_assurance_response()
+    )
+
+    assert source_json["agent_id"] == "source-quality-analyst"
+    assert source_json["display_name"] == "Source Quality Intelligence Analyst"
+    assert assurance_json["agent_id"] == "repair-assurance-analyst"
+    assert assurance_json["display_name"] == "Repair Assurance Intelligence Analyst"
+    assert assurance_json["guidance"][0]["repair_contract_ref"] == "STITCH-RC-001"
+    assert assurance_json["shadow_validation_status"] == "NOT_RUN"
+    assert assurance_json["auto_apply"] is False
+

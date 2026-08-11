@@ -6,6 +6,7 @@ from urllib3.util.retry import Retry
 
 from stitch_cli.code_cli import (
     call_code_agent,
+    call_repair_assurance_agent,
     call_source_review_agent,
 )
 from stitch_cli.runtime_fallback import build_client_runtime_fallback
@@ -26,6 +27,9 @@ MAX_RUNTIME_RAW_FAILURE_CHARS = 2000
 MAX_SOURCE_REVIEW_FILES = 100
 MAX_SOURCE_FILE_CHARS = 50000
 MAX_SOURCE_REVIEW_CHARS = 300000
+MAX_REPAIR_ASSURANCE_FILES = 8
+MAX_REPAIR_ASSURANCE_FILE_CHARS = 30000
+MAX_REPAIR_ASSURANCE_CHARS = 90000
 
 
 def normalize_list(value):
@@ -497,9 +501,14 @@ def build_local_no_source_review(
     )
 
     return {
+        "agent_id": "source-quality-analyst",
+        "display_name": "Source Quality Intelligence Analyst",
+        "agent_version": "3.0",
         "agent": "code-agent",
         "mode": "local-guard",
+        "model": None,
         "status": "NO_SOURCE_FILES",
+        "confidence": "HIGH",
         "summary": warning,
         "risk_level": "UNKNOWN",
         "release_recommendation": "REVIEW_REQUIRED",
@@ -514,15 +523,16 @@ def build_local_no_source_review(
         },
         "category_summary": {},
         "findings": [],
-        "warnings": [
-            warning
-        ],
+        "warnings": [warning],
         "limitations": [
             "Source-code QA review could not run because no eligible application source files were available."
         ],
         "verification": (
             "Confirm whether the project intentionally contains tests only, then review the runtime evidence."
         ),
+        "current_knowledge_required": False,
+        "current_knowledge_reason": None,
+        "llm_metrics": None,
         "llm_error": None,
         "coverage": collection,
     }
@@ -678,11 +688,16 @@ def build_unavailable_source_review(
     )
 
     return {
+        "agent_id": "source-quality-analyst",
+        "display_name": "Source Quality Intelligence Analyst",
+        "agent_version": "3.0",
         "agent": "code-agent",
         "mode": "unavailable",
+        "model": None,
         "status": "UNAVAILABLE",
+        "confidence": "LOW",
         "summary": (
-            "Source-code QA review could not be completed because Agent 3 was unavailable."
+            "Source Quality Intelligence analysis could not be completed because Agent 3 was unavailable."
         ),
         "risk_level": "UNKNOWN",
         "release_recommendation": "QA_INCOMPLETE",
@@ -691,15 +706,16 @@ def build_unavailable_source_review(
         "severity_summary": {},
         "category_summary": {},
         "findings": [],
-        "warnings": [
-            str(error)
-        ],
+        "warnings": [str(error)],
         "limitations": [
-            "No Agent 3 source-review result was available for this run."
+            "No Source Quality Intelligence result was available for this run."
         ],
         "verification": (
-            "Check the Code Agent deployment and rerun Stitch QA."
+            "Check the Agent 3 deployment and rerun Stitch QA."
         ),
+        "current_knowledge_required": False,
+        "current_knowledge_reason": None,
+        "llm_metrics": None,
         "llm_error": None,
         "coverage": {
             "discovered_files_count": int(
@@ -1176,62 +1192,78 @@ def build_repair_source_review_payload(source_review_data):
 
 
 def normalize_code_agent_data(data):
-    if not isinstance(
-        data,
-        dict,
-    ):
+    if not isinstance(data, dict):
         return None
 
-    if not data.get(
-        "status"
-    ):
+    if not data.get("status"):
         return None
+
+    guidance = []
+    for item in normalize_list(data.get("guidance")):
+        if not isinstance(item, dict):
+            continue
+        guidance.append(
+            {
+                "guidance_id": item.get("guidance_id"),
+                "repair_contract_ref": item.get("repair_contract_ref"),
+                "finding_refs": normalize_list(item.get("finding_refs")),
+                "target_files": normalize_list(item.get("target_files")),
+                "target_symbols": normalize_list(item.get("target_symbols")),
+                "implementation_intent": item.get("implementation_intent"),
+                "code_level_approach": item.get("code_level_approach"),
+                "change_boundary": item.get("change_boundary"),
+                "protected_behavior": item.get("protected_behavior"),
+                "side_effect_considerations": item.get("side_effect_considerations"),
+                "targeted_verification": item.get("targeted_verification"),
+                "regression_verification": item.get("regression_verification"),
+                "suggested_patch": item.get("suggested_patch"),
+                "patch_validation_status": item.get("patch_validation_status") or "NOT_VALIDATED",
+                "current_knowledge_required": bool(
+                    item.get("current_knowledge_required", False)
+                ),
+                "current_knowledge_reason": item.get("current_knowledge_reason"),
+                "status": item.get("status") or "PENDING_IMPLEMENTATION",
+            }
+        )
 
     return {
-        "agent": (
-            data.get(
-                "agent"
-            )
-            or "code-agent"
+        "agent_id": data.get("agent_id") or "repair-assurance-analyst",
+        "display_name": (
+            data.get("display_name")
+            or "Repair Assurance Intelligence Analyst"
         ),
-        "mode": (
-            data.get(
-                "mode"
-            )
-            or "unknown"
+        "agent_version": data.get("agent_version") or "3.0",
+        "agent": data.get("agent") or "code-agent",
+        "mode": data.get("mode") or "unknown",
+        "model": data.get("model"),
+        "status": data.get("status"),
+        "confidence": data.get("confidence") or "LOW",
+        "risk_level": data.get("risk_level") or "UNKNOWN",
+        "auto_apply": bool(data.get("auto_apply", False)),
+        "summary": data.get("summary"),
+        "guidance": guidance,
+        "suggested_patch": data.get("suggested_patch"),
+        "verification": data.get("verification"),
+        "current_knowledge_required": bool(
+            data.get("current_knowledge_required", False)
         ),
-        "status": data.get(
-            "status"
+        "current_knowledge_reason": data.get("current_knowledge_reason"),
+        "evidence_lineage": [
+            item
+            for item in normalize_list(data.get("evidence_lineage"))
+            if isinstance(item, dict)
+        ],
+        "shadow_validation_status": (
+            data.get("shadow_validation_status") or "NOT_RUN"
         ),
-        "risk_level": (
-            data.get(
-                "risk_level"
-            )
-            or "UNKNOWN"
+        "warnings": normalize_list(data.get("warnings")),
+        "limitations": normalize_list(data.get("limitations")),
+        "llm_metrics": (
+            data.get("llm_metrics")
+            if isinstance(data.get("llm_metrics"), dict)
+            else None
         ),
-        "auto_apply": bool(
-            data.get(
-                "auto_apply",
-                False,
-            )
-        ),
-        "summary": data.get(
-            "summary"
-        ),
-        "suggested_patch": data.get(
-            "suggested_patch"
-        ),
-        "verification": data.get(
-            "verification"
-        ),
-        "warnings": normalize_list(
-            data.get(
-                "warnings"
-            )
-        ),
-        "llm_error": data.get(
-            "llm_error"
-        ),
+        "llm_error": data.get("llm_error"),
     }
 
 
@@ -1239,21 +1271,33 @@ def build_unavailable_code_guidance(
     error,
 ):
     return {
+        "agent_id": "repair-assurance-analyst",
+        "display_name": "Repair Assurance Intelligence Analyst",
+        "agent_version": "3.0",
         "agent": "code-agent",
         "mode": "unavailable",
+        "model": None,
         "status": "UNAVAILABLE",
+        "confidence": "LOW",
         "risk_level": "UNKNOWN",
         "auto_apply": False,
         "summary": (
-            "Runtime code-repair guidance could not be completed because Agent 3 was unavailable."
+            "Repair Assurance could not be completed because Agent 3 was unavailable."
         ),
+        "guidance": [],
         "suggested_patch": None,
         "verification": (
-            "Check the Code Agent deployment and rerun Stitch QA."
+            "Check the Agent 3 deployment and rerun Stitch QA."
         ),
-        "warnings": [
-            str(error)
+        "current_knowledge_required": False,
+        "current_knowledge_reason": None,
+        "evidence_lineage": [],
+        "shadow_validation_status": "NOT_RUN",
+        "warnings": [str(error)],
+        "limitations": [
+            "No Repair Assurance result was available; Agent 1, Agent 2, and source-review evidence remain unchanged."
         ],
+        "llm_metrics": None,
         "llm_error": None,
     }
 
@@ -1452,103 +1496,165 @@ def suggest_repair_with_agent(
         }
 
 
+def repair_assurance_candidate_paths(
+    scan_result,
+    source_review_data,
+    agent_data,
+    repair_data,
+):
+    source_review = source_review_data if isinstance(source_review_data, dict) else {}
+    runtime_analysis = agent_data if isinstance(agent_data, dict) else {}
+    repair_plan = repair_data if isinstance(repair_data, dict) else {}
+    discovered = normalize_list(
+        scan_result.get("source_review", {}).get("source_files")
+    )
+    source_by_id = {
+        str(item.get("id")): item
+        for item in normalize_list(source_review.get("findings"))
+        if isinstance(item, dict) and item.get("id")
+    }
+    runtime_by_id = {
+        str(item.get("group_id")): item
+        for item in normalize_list(runtime_analysis.get("root_cause_groups"))
+        if isinstance(item, dict) and item.get("group_id")
+    }
+    paths = []
+
+    def add(value):
+        path = str(value or "").strip()
+        if path and path in discovered and path not in paths:
+            paths.append(path)
+
+    for contract in normalize_list(repair_plan.get("stitch_repair_contracts")):
+        if not isinstance(contract, dict):
+            continue
+        for ref in normalize_list(contract.get("finding_refs")):
+            source_item = source_by_id.get(str(ref))
+            if source_item:
+                add(source_item.get("file_path"))
+            runtime_item = runtime_by_id.get(str(ref))
+            if runtime_item:
+                for evidence in normalize_list(runtime_item.get("evidence")):
+                    if isinstance(evidence, dict):
+                        add(evidence.get("application_file"))
+
+    if not paths:
+        for path in discovered:
+            add(path)
+            if len(paths) >= MAX_REPAIR_ASSURANCE_FILES:
+                break
+
+    return paths[:MAX_REPAIR_ASSURANCE_FILES]
+
+
+def build_repair_assurance_source_files(
+    scan_result,
+    candidate_paths,
+):
+    files = []
+    total_chars = 0
+
+    for relative_path in candidate_paths:
+        if len(files) >= MAX_REPAIR_ASSURANCE_FILES:
+            break
+        absolute_path = resolve_project_file(
+            scan_result["project_path"],
+            relative_path,
+        )
+        if absolute_path is None:
+            continue
+        try:
+            content = absolute_path.read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
+        except OSError:
+            continue
+
+        original_chars = len(content)
+        content = content[:MAX_REPAIR_ASSURANCE_FILE_CHARS]
+        remaining = MAX_REPAIR_ASSURANCE_CHARS - total_chars
+        if remaining <= 0:
+            break
+        if len(content) > remaining:
+            content = content[:remaining]
+        truncated = len(content) < original_chars
+        if not content:
+            continue
+        files.append(
+            {
+                "path": relative_path,
+                "content": content,
+                "truncated": truncated,
+                "original_chars": original_chars,
+            }
+        )
+        total_chars += len(content)
+
+    return files
+
+
+def build_repair_assurance_source_review(source_review_data):
+    source = source_review_data if isinstance(source_review_data, dict) else {}
+    return {
+        "agent_id": source.get("agent_id"),
+        "display_name": source.get("display_name"),
+        "agent_version": source.get("agent_version"),
+        "status": source.get("status"),
+        "risk_level": source.get("risk_level"),
+        "release_recommendation": source.get("release_recommendation"),
+        "findings_count": source.get("findings_count"),
+        "findings": normalize_list(source.get("findings"))[:MAX_REPAIR_SOURCE_FINDINGS],
+        "warnings": normalize_list(source.get("warnings"))[:20],
+        "limitations": normalize_list(source.get("limitations"))[:20],
+    }
+
+
 def suggest_code_fix_with_agent(
     code_agent_url,
     scan_result,
     execution_result,
     agent_data=None,
     repair_data=None,
+    source_review_data=None,
 ):
-    static_map = scan_result.get(
-        "static_map",
-        {},
-    )
-    failure_context = get_failure_context(
-        execution_result
-    )
-
-    main_file = static_map.get(
-        "main_file"
-    )
-    code_snippet = read_project_file(
-        scan_result[
-            "project_path"
-        ],
-        main_file,
-    )
-
-    root_cause = get_root_cause(
+    failure_context = get_failure_context(execution_result)
+    candidate_paths = repair_assurance_candidate_paths(
+        scan_result,
+        source_review_data,
         agent_data,
-        execution_result,
+        repair_data,
     )
-
-    if (
-        not root_cause
-        and failure_context[
-            "help_message"
-        ]
-    ):
-        root_cause = failure_context[
-            "help_message"
-        ]
-
-    repair_summary = (
-        repair_data.get(
-            "summary"
-        )
-        if repair_data
-        else None
+    source_files = build_repair_assurance_source_files(
+        scan_result,
+        candidate_paths,
     )
-
-    if (
-        not repair_summary
-        and failure_context[
-            "help_message"
-        ]
-    ):
-        repair_summary = failure_context[
-            "help_message"
-        ]
 
     payload = {
-        "project_type": scan_result[
-            "project_type"
-        ],
-        "file_path": main_file,
-        "code_snippet": code_snippet,
-        "error_log": build_error_log(
-            execution_result
+        "project_type": scan_result["project_type"],
+        "command": execution_result.get("command") or "",
+        "success": execution_result.get("success"),
+        "exit_code": execution_result.get("exit_code"),
+        "failure_type": failure_context["failure_type"],
+        "help_message": failure_context["help_message"],
+        "runtime_analysis": agent_data if isinstance(agent_data, dict) else None,
+        "source_review": build_repair_assurance_source_review(
+            source_review_data
         ),
-        "root_cause": root_cause,
-        "repair_summary": repair_summary,
-        "failure_type": failure_context[
-            "failure_type"
-        ],
-        "help_message": failure_context[
-            "help_message"
-        ],
-        "success": execution_result[
-            "success"
-        ],
-        "exit_code": execution_result[
-            "exit_code"
-        ],
+        "repair_plan": repair_data if isinstance(repair_data, dict) else None,
+        "source_files": source_files,
     }
 
-    result = call_code_agent(
+    result = call_repair_assurance_agent(
         payload,
         code_agent_url,
     )
 
-    if not result.get(
-        "success"
-    ):
+    if not result.get("success"):
         return result
 
     data = normalize_code_agent_data(
-        result.get(
-            "data"
-        )
+        result.get("data")
     )
 
     if data is None:
@@ -1556,7 +1662,7 @@ def suggest_code_fix_with_agent(
             "success": False,
             "data": None,
             "error": (
-                "Code agent returned an invalid repair-guidance response."
+                "Repair Assurance Intelligence Analyst returned an invalid response."
             ),
         }
 

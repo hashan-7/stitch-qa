@@ -31,7 +31,7 @@ SOURCE_COMPLETE_STATUSES = {
     "PARTIAL",
 }
 
-REPORT_SCHEMA_VERSION = "3.2"
+REPORT_SCHEMA_VERSION = "3.3"
 TOOL_VERSION = "v2.2-development"
 
 SEVERITY_DISPLAY_ORDER = [
@@ -492,9 +492,14 @@ def build_source_review_json(
 ):
     if not source_review_data:
         return {
-            "status": "NOT_RUN",
+            "agent_id": "source-quality-analyst",
+            "display_name": "Source Quality Intelligence Analyst",
+            "agent_version": "3.0",
             "agent": None,
             "mode": None,
+            "model": None,
+            "status": "NOT_RUN",
+            "confidence": "UNKNOWN",
             "summary": None,
             "risk_level": "UNKNOWN",
             "release_recommendation": "QA_INCOMPLETE",
@@ -506,77 +511,64 @@ def build_source_review_json(
             "warnings": [],
             "limitations": [],
             "verification": None,
+            "current_knowledge_required": False,
+            "current_knowledge_reason": None,
+            "llm_metrics": None,
             "llm_error": None,
             "coverage": {},
         }
 
     return {
-        "status": source_review_data.get(
-            "status"
+        "agent_id": safe_value(
+            source_review_data.get("agent_id"),
+            "source-quality-analyst",
         ),
-        "agent": source_review_data.get(
-            "agent"
+        "display_name": safe_value(
+            source_review_data.get("display_name"),
+            "Source Quality Intelligence Analyst",
         ),
-        "mode": source_review_data.get(
-            "mode"
+        "agent_version": safe_value(
+            source_review_data.get("agent_version"),
+            "3.0",
         ),
-        "summary": source_review_data.get(
-            "summary"
+        "agent": source_review_data.get("agent"),
+        "mode": source_review_data.get("mode"),
+        "model": source_review_data.get("model"),
+        "status": source_review_data.get("status"),
+        "confidence": safe_value(
+            source_review_data.get("confidence"),
+            "UNKNOWN",
         ),
-        "risk_level": source_review_data.get(
-            "risk_level"
-        ),
+        "summary": source_review_data.get("summary"),
+        "risk_level": source_review_data.get("risk_level"),
         "release_recommendation": source_review_data.get(
             "release_recommendation"
         ),
         "reviewed_files_count": int(
-            source_review_data.get(
-                "reviewed_files_count",
-                0,
-            )
+            source_review_data.get("reviewed_files_count", 0)
         ),
         "findings_count": int(
-            source_review_data.get(
-                "findings_count",
-                0,
-            )
+            source_review_data.get("findings_count", 0)
         ),
-        "severity_summary": source_review_data.get(
-            "severity_summary",
-            {},
+        "severity_summary": source_review_data.get("severity_summary", {}),
+        "category_summary": source_review_data.get("category_summary", {}),
+        "findings": format_list(source_review_data.get("findings", [])),
+        "warnings": format_list(source_review_data.get("warnings", [])),
+        "limitations": format_list(source_review_data.get("limitations", [])),
+        "verification": source_review_data.get("verification"),
+        "current_knowledge_required": bool(
+            source_review_data.get("current_knowledge_required", False)
         ),
-        "category_summary": source_review_data.get(
-            "category_summary",
-            {},
+        "current_knowledge_reason": source_review_data.get(
+            "current_knowledge_reason"
         ),
-        "findings": format_list(
-            source_review_data.get(
-                "findings",
-                [],
-            )
+        "llm_metrics": (
+            source_review_data.get("llm_metrics")
+            if isinstance(source_review_data.get("llm_metrics"), dict)
+            else None
         ),
-        "warnings": format_list(
-            source_review_data.get(
-                "warnings",
-                [],
-            )
-        ),
-        "limitations": format_list(
-            source_review_data.get(
-                "limitations",
-                [],
-            )
-        ),
-        "verification": source_review_data.get(
-            "verification"
-        ),
-        "llm_error": source_review_data.get(
-            "llm_error"
-        ),
-        "coverage": source_review_data.get(
-            "coverage",
-            {},
-        ),
+        "llm_error": source_review_data.get("llm_error"),
+        "coverage": source_review_data.get("coverage", {}),
     }
 
 
@@ -867,77 +859,101 @@ def build_repair_agent_json(repair_data):
 def build_code_agent_json(
     code_data,
 ):
+    source = code_data if isinstance(code_data, dict) else {}
+    guidance = []
+    for item in format_list(source.get("guidance", [])):
+        if not isinstance(item, dict):
+            continue
+        guidance.append(
+            {
+                "guidance_id": safe_value(item.get("guidance_id")),
+                "repair_contract_ref": safe_value(
+                    item.get("repair_contract_ref")
+                ),
+                "finding_refs": format_list(item.get("finding_refs", [])),
+                "target_files": format_list(item.get("target_files", [])),
+                "target_symbols": format_list(item.get("target_symbols", [])),
+                "implementation_intent": safe_value(
+                    item.get("implementation_intent")
+                ),
+                "code_level_approach": safe_value(
+                    item.get("code_level_approach")
+                ),
+                "change_boundary": safe_value(item.get("change_boundary")),
+                "protected_behavior": safe_value(
+                    item.get("protected_behavior")
+                ),
+                "side_effect_considerations": safe_value(
+                    item.get("side_effect_considerations")
+                ),
+                "targeted_verification": safe_value(
+                    item.get("targeted_verification")
+                ),
+                "regression_verification": safe_value(
+                    item.get("regression_verification")
+                ),
+                "suggested_patch": safe_value(item.get("suggested_patch")),
+                "patch_validation_status": safe_value(
+                    item.get("patch_validation_status"),
+                    "NOT_VALIDATED",
+                ),
+                "current_knowledge_required": bool(
+                    item.get("current_knowledge_required", False)
+                ),
+                "current_knowledge_reason": safe_value(
+                    item.get("current_knowledge_reason")
+                ),
+                "status": safe_value(
+                    item.get("status"),
+                    "PENDING_IMPLEMENTATION",
+                ),
+            }
+        )
+
     return {
-        "agent": safe_value(
-            code_data.get(
-                "agent"
-            )
-            if code_data
+        "agent_id": safe_value(
+            source.get("agent_id"),
+            "repair-assurance-analyst",
+        ),
+        "display_name": safe_value(
+            source.get("display_name"),
+            "Repair Assurance Intelligence Analyst",
+        ),
+        "agent_version": safe_value(source.get("agent_version"), "3.0"),
+        "agent": safe_value(source.get("agent")),
+        "mode": safe_value(source.get("mode")),
+        "model": safe_value(source.get("model")),
+        "status": safe_value(source.get("status")),
+        "confidence": safe_value(source.get("confidence"), "UNKNOWN"),
+        "risk_level": safe_value(source.get("risk_level"), "UNKNOWN"),
+        "auto_apply": bool(source.get("auto_apply", False)),
+        "summary": safe_value(source.get("summary")),
+        "guidance": guidance,
+        "suggested_patch": safe_value(source.get("suggested_patch")),
+        "verification": safe_value(source.get("verification")),
+        "current_knowledge_required": bool(
+            source.get("current_knowledge_required", False)
+        ),
+        "current_knowledge_reason": safe_value(
+            source.get("current_knowledge_reason")
+        ),
+        "evidence_lineage": [
+            item
+            for item in format_list(source.get("evidence_lineage", []))
+            if isinstance(item, dict)
+        ],
+        "shadow_validation_status": safe_value(
+            source.get("shadow_validation_status"),
+            "NOT_RUN",
+        ),
+        "warnings": format_list(source.get("warnings", [])),
+        "limitations": format_list(source.get("limitations", [])),
+        "llm_metrics": (
+            source.get("llm_metrics")
+            if isinstance(source.get("llm_metrics"), dict)
             else None
         ),
-        "mode": safe_value(
-            code_data.get(
-                "mode"
-            )
-            if code_data
-            else None
-        ),
-        "status": safe_value(
-            code_data.get(
-                "status"
-            )
-            if code_data
-            else None
-        ),
-        "risk_level": safe_value(
-            code_data.get(
-                "risk_level"
-            )
-            if code_data
-            else None
-        ),
-        "auto_apply": safe_value(
-            code_data.get(
-                "auto_apply"
-            )
-            if code_data
-            else None
-        ),
-        "summary": safe_value(
-            code_data.get(
-                "summary"
-            )
-            if code_data
-            else None
-        ),
-        "suggested_patch": safe_value(
-            code_data.get(
-                "suggested_patch"
-            )
-            if code_data
-            else None
-        ),
-        "verification": safe_value(
-            code_data.get(
-                "verification"
-            )
-            if code_data
-            else None
-        ),
-        "warnings": format_list(
-            code_data.get(
-                "warnings"
-            )
-            if code_data
-            else []
-        ),
-        "llm_error": safe_value(
-            code_data.get(
-                "llm_error"
-            )
-            if code_data
-            else None
-        ),
+        "llm_error": safe_value(source.get("llm_error")),
     }
 
 
@@ -1258,19 +1274,19 @@ def build_qa_decision(
 
     if source_available:
         reasons.append(
-            f"Agent 3 source review completed with risk level {source_risk}."
+            f"Source Quality Intelligence completed with risk level {source_risk}."
         )
     elif no_source_files:
         reasons.append(
-            "No eligible application source files were available for Agent 3 review."
+            "No eligible application source files were available for Source Quality Intelligence review."
         )
     elif source_unavailable:
         reasons.append(
-            "Agent 3 source review was unavailable for discovered application source files."
+            "Source Quality Intelligence was unavailable for discovered application source files."
         )
     else:
         reasons.append(
-            f"Agent 3 source review status was {source_status}."
+            f"Source Quality Intelligence status was {source_status}."
         )
 
     if tests_skipped:
@@ -1311,7 +1327,7 @@ def build_qa_decision(
         "code_fix_requested"
     ):
         reasons.append(
-            f"Agent 3 code-repair guidance status was {code_status}."
+            f"Repair Assurance Intelligence status was {code_status}."
         )
 
     source_release = normalize_status(
@@ -2195,29 +2211,23 @@ def build_source_review_markdown(
     source_review_json,
 ):
     findings_text = format_source_findings(
-        source_review_json.get(
-            "findings",
-            [],
-        )
+        source_review_json.get("findings", [])
     )
     warnings_text = format_markdown_list(
-        source_review_json.get(
-            "warnings",
-            [],
-        )
+        source_review_json.get("warnings", [])
     )
     limitations_text = format_markdown_list(
-        source_review_json.get(
-            "limitations",
-            [],
-        )
+        source_review_json.get("limitations", [])
     )
 
     return (
-        "## Source-Code QA Review\n\n"
+        "## Source Quality Intelligence Analyst\n\n"
+        f"- Agent ID: {safe_value(source_review_json.get('agent_id'), 'source-quality-analyst')}\n"
+        f"- Version: {safe_value(source_review_json.get('agent_version'), '3.0')}\n"
         f"- Status: **{safe_value(source_review_json.get('status'), 'NOT_RUN')}**\n"
-        f"- Agent: {safe_value(source_review_json.get('agent'), 'Not available')}\n"
         f"- Mode: {safe_value(source_review_json.get('mode'), 'Not available')}\n"
+        f"- Model: {safe_value(source_review_json.get('model'), 'Not used')}\n"
+        f"- Confidence: {safe_value(source_review_json.get('confidence'), 'UNKNOWN')}\n"
         f"- Risk Level: **{safe_value(source_review_json.get('risk_level'), 'UNKNOWN')}**\n"
         f"- Release Recommendation: **{safe_value(source_review_json.get('release_recommendation'), 'QA_INCOMPLETE')}**\n"
         f"- Reviewed Files: {source_review_json.get('reviewed_files_count', 0)}\n"
@@ -2226,9 +2236,12 @@ def build_source_review_markdown(
         f"{safe_value(source_review_json.get('summary'), 'No source-review summary available.')}\n\n"
         "### Prioritized Findings\n\n"
         f"{findings_text}\n\n"
-        "### Source Review Warnings\n\n"
+        "### Current Knowledge Check\n\n"
+        f"- Required: {bool(source_review_json.get('current_knowledge_required', False))}\n"
+        f"- Reason: {safe_value(source_review_json.get('current_knowledge_reason'), 'Not required')}\n\n"
+        "### Warnings\n\n"
         f"{warnings_text}\n\n"
-        "### Source Review Limitations\n\n"
+        "### Limitations\n\n"
         f"{limitations_text}\n\n"
         "### Verification Guidance\n\n"
         f"{safe_value(source_review_json.get('verification'), 'Rerun Stitch QA after addressing confirmed findings.')}\n\n"
@@ -2330,7 +2343,7 @@ def build_qa_decision_markdown(
         ],
         [
             [
-                "Agent 3 Source Review",
+                "Source Quality Intelligence Analyst",
                 workflow_status.get(
                     "source_review",
                     "NOT_RUN",
@@ -2358,7 +2371,7 @@ def build_qa_decision_markdown(
                 ),
             ],
             [
-                "Agent 3 Code Repair Guidance",
+                "Repair Assurance Intelligence Analyst",
                 workflow_status.get(
                     "code_repair_guidance",
                     "NOT_REQUESTED",
@@ -2723,28 +2736,64 @@ def build_agent_details_markdown(
             f"{repair_agent_json.get('llm_error')}\n\n"
         )
 
+    guidance_sections = []
+    for item in code_agent_json.get("guidance", []):
+        guidance_sections.append(
+            f"#### {safe_value(item.get('guidance_id'), 'Repair Assurance Item')} — "
+            f"{safe_value(item.get('repair_contract_ref'), 'Repair Contract')}\n\n"
+            f"- Findings: {format_inline_list(item.get('finding_refs', []))}\n"
+            f"- Target Files: {format_inline_list(item.get('target_files', []))}\n"
+            f"- Target Symbols: {format_inline_list(item.get('target_symbols', []))}\n"
+            f"- Patch Validation: {safe_value(item.get('patch_validation_status'), 'NOT_VALIDATED')}\n"
+            f"- Status: {safe_value(item.get('status'), 'PENDING_IMPLEMENTATION')}\n\n"
+            f"**Implementation Intent**\n\n{safe_value(item.get('implementation_intent'), 'Not available')}\n\n"
+            f"**Code-level Approach**\n\n{safe_value(item.get('code_level_approach'), 'Not available')}\n\n"
+            f"**Change Boundary**\n\n{safe_value(item.get('change_boundary'), 'Not available')}\n\n"
+            f"**Protected Behavior**\n\n{safe_value(item.get('protected_behavior'), 'Not available')}\n\n"
+            f"**Side-effect Considerations**\n\n{safe_value(item.get('side_effect_considerations'), 'Not available')}\n\n"
+            f"**Targeted Verification**\n\n{safe_value(item.get('targeted_verification'), 'Not available')}\n\n"
+            f"**Regression Verification**\n\n{safe_value(item.get('regression_verification'), 'Not available')}"
+        )
+
+    guidance_text = (
+        "\n\n".join(guidance_sections)
+        if guidance_sections
+        else "No Repair Assurance guidance was generated."
+    )
+
     code_section = (
-        "## Agent 3 Runtime Code Repair Guidance\n\n"
-        f"- Agent: {safe_value(code_agent_json.get('agent'), 'Not available')}\n"
+        "## Repair Assurance Intelligence Analyst\n\n"
+        f"- Agent ID: {safe_value(code_agent_json.get('agent_id'), 'repair-assurance-analyst')}\n"
+        f"- Version: {safe_value(code_agent_json.get('agent_version'), '3.0')}\n"
         f"- Mode: {safe_value(code_agent_json.get('mode'), 'Not available')}\n"
+        f"- Model: {safe_value(code_agent_json.get('model'), 'Not used')}\n"
         f"- Status: {safe_value(code_agent_json.get('status'), 'Not requested')}\n"
+        f"- Confidence: {safe_value(code_agent_json.get('confidence'), 'UNKNOWN')}\n"
         f"- Risk Level: {safe_value(code_agent_json.get('risk_level'), 'UNKNOWN')}\n"
-        f"- Auto Apply: {safe_value(code_agent_json.get('auto_apply'), False)}\n\n"
+        f"- Auto Apply: {safe_value(code_agent_json.get('auto_apply'), False)}\n"
+        f"- Shadow Validation: {safe_value(code_agent_json.get('shadow_validation_status'), 'NOT_RUN')}\n\n"
         "### Summary\n\n"
         f"{safe_value(code_agent_json.get('summary'), 'Not requested')}\n\n"
-        "### Suggested Patch Guidance\n\n"
-        f"{safe_value(code_agent_json.get('suggested_patch'), 'Not available')}\n\n"
+        "### Contract-bound Guidance\n\n"
+        f"{guidance_text}\n\n"
+        "### Current Knowledge Check\n\n"
+        f"- Required: {bool(code_agent_json.get('current_knowledge_required', False))}\n"
+        f"- Reason: {safe_value(code_agent_json.get('current_knowledge_reason'), 'Not required')}\n\n"
+        "### Suggested Patch\n\n"
+        f"{safe_value(code_agent_json.get('suggested_patch'), 'Not generated')}\n\n"
         "### Verification\n\n"
         f"{safe_value(code_agent_json.get('verification'), 'Not available')}\n\n"
         "### Warnings\n\n"
         f"{format_markdown_list(code_agent_json.get('warnings', []))}\n\n"
+        "### Limitations\n\n"
+        f"{format_markdown_list(code_agent_json.get('limitations', []))}\n\n"
     )
 
     if code_agent_json.get(
         "llm_error"
     ):
         code_section += (
-            "### Agent 3 LLM Error\n\n"
+            "### Repair Assurance LLM Fallback Reason\n\n"
             f"{code_agent_json.get('llm_error')}\n\n"
         )
 
@@ -3357,4 +3406,6 @@ def generate_report(
     )
 
     return md_report_path
+
+
 

@@ -66,16 +66,23 @@ def print_source_review_result(
 ):
     console.print(
         "\n[bold magenta]"
-        "Agent 3 Source Code QA Review"
+        "Source Quality Intelligence Analyst"
         "[/bold magenta]"
     )
     console.print(
-        f"[bold]Status:[/bold] "
-        f"{source_review_data.get('status')}"
+        f"[bold]Agent ID:[/bold] "
+        f"{source_review_data.get('agent_id', 'source-quality-analyst')}"
     )
     console.print(
-        f"[bold]Mode:[/bold] "
-        f"{source_review_data.get('mode')}"
+        f"[bold]Version:[/bold] "
+        f"{source_review_data.get('agent_version', '3.0')}"
+    )
+    console.print(f"[bold]Status:[/bold] {source_review_data.get('status')}")
+    console.print(f"[bold]Mode:[/bold] {source_review_data.get('mode')}")
+    console.print(f"[bold]Model:[/bold] {source_review_data.get('model') or 'Not used'}")
+    console.print(
+        f"[bold]Confidence:[/bold] "
+        f"{source_review_data.get('confidence', 'UNKNOWN')}"
     )
     console.print(
         f"[bold]Reviewed Files:[/bold] "
@@ -93,70 +100,42 @@ def print_source_review_result(
         f"[bold]Release Recommendation:[/bold] "
         f"{source_review_data.get('release_recommendation')}"
     )
-    console.print(
-        f"[bold]Summary:[/bold] "
-        f"{source_review_data.get('summary')}"
-    )
+    console.print(f"[bold]Summary:[/bold] {source_review_data.get('summary')}")
 
-    findings = source_review_data.get(
-        "findings",
-        [],
-    )
+    findings = source_review_data.get("findings", [])
 
     if findings:
-        console.print(
-            "\n[bold cyan]"
-            "Source Review Findings"
-            "[/bold cyan]"
-        )
-
+        console.print("\n[bold cyan]Source Quality Findings[/bold cyan]")
         for finding in findings[:10]:
-            location = (
-                finding.get(
-                    "file_path"
-                )
-                or "Project"
-            )
-
-            if finding.get(
-                "line"
-            ):
-                location = (
-                    f"{location}:"
-                    f"{finding.get('line')}"
-                )
-
+            location = finding.get("file_path") or "Project"
+            if finding.get("line"):
+                location = f"{location}:{finding.get('line')}"
             console.print(
                 f"- [{finding.get('severity', 'UNKNOWN')}] "
                 f"{finding.get('title', 'Source finding')} "
                 f"({location})"
             )
-
         if len(findings) > 10:
-            console.print(
-                f"... and {len(findings) - 10} more findings"
-            )
+            console.print(f"... and {len(findings) - 10} more findings")
 
-    for warning in source_review_data.get(
-        "warnings",
-        [],
-    ):
+    console.print(
+        f"[bold]Current Knowledge Required:[/bold] "
+        f"{source_review_data.get('current_knowledge_required', False)}"
+    )
+    if source_review_data.get("current_knowledge_reason"):
         console.print(
-            f"[bold yellow]"
-            f"Source Review Warning:"
-            f"[/bold yellow] "
-            f"{warning}"
+            f"[bold]Why:[/bold] "
+            f"{source_review_data.get('current_knowledge_reason')}"
         )
 
-    for limitation in source_review_data.get(
-        "limitations",
-        [],
-    ):
+    for warning in source_review_data.get("warnings", []):
         console.print(
-            f"[bold yellow]"
-            f"Source Review Limitation:"
-            f"[/bold yellow] "
-            f"{limitation}"
+            f"[bold yellow]Source Quality Warning:[/bold yellow] {warning}"
+        )
+
+    for limitation in source_review_data.get("limitations", []):
+        console.print(
+            f"[bold yellow]Source Quality Limitation:[/bold yellow] {limitation}"
         )
 
 
@@ -586,72 +565,117 @@ def print_code_agent_result(
 ):
     console.print(
         "\n[bold magenta]"
-        "Agent 3 Code Repair Guidance"
+        "Repair Assurance Intelligence Analyst"
         "[/bold magenta]"
     )
     console.print(
-        f"[bold]Status:[/bold] "
-        f"{code_data.get('status')}"
+        f"[bold]Agent ID:[/bold] "
+        f"{code_data.get('agent_id', 'repair-assurance-analyst')}"
     )
     console.print(
-        f"[bold]Mode:[/bold] "
-        f"{code_data.get('mode')}"
+        f"[bold]Version:[/bold] "
+        f"{code_data.get('agent_version', '3.0')}"
     )
+    console.print(f"[bold]Status:[/bold] {code_data.get('status')}")
+    console.print(f"[bold]Mode:[/bold] {code_data.get('mode')}")
+    console.print(f"[bold]Model:[/bold] {code_data.get('model') or 'Not used'}")
     console.print(
-        f"[bold]Risk Level:[/bold] "
-        f"{code_data.get('risk_level')}"
+        f"[bold]Confidence:[/bold] "
+        f"{code_data.get('confidence', 'UNKNOWN')}"
     )
-    console.print(
-        f"[bold]Auto Apply:[/bold] "
-        f"{code_data.get('auto_apply')}"
-    )
-    console.print(
-        f"[bold]Summary:[/bold] "
-        f"{code_data.get('summary')}"
-    )
-    console.print(
-        f"[bold]Verification:[/bold] "
-        f"{code_data.get('verification')}"
-    )
+    console.print(f"[bold]Risk Level:[/bold] {code_data.get('risk_level')}")
+    console.print(f"[bold]Auto Apply:[/bold] {code_data.get('auto_apply')}")
+    console.print(f"[bold]Summary:[/bold] {code_data.get('summary')}")
 
-    if code_data.get(
-        "suggested_patch"
-    ):
-        console.print(
-            "\n[bold cyan]"
-            "Suggested Patch Guidance"
-            "[/bold cyan]"
-        )
-        console.print(
-            code_data.get(
-                "suggested_patch"
-            ),
-            markup=False,
-        )
-
-    if code_data.get(
-        "llm_error"
-    ):
-        console.print(
-            "\n[bold red]"
-            "Code Agent LLM Error"
-            "[/bold red]"
-        )
-        console.print(
-            code_data.get(
-                "llm_error"
+    guidance = code_data.get("guidance", [])
+    if guidance:
+        console.print("\n[bold cyan]Repair Assurance Guidance[/bold cyan]")
+        for item in guidance:
+            console.print(
+                f"\n[bold]{item.get('guidance_id')} — "
+                f"{item.get('repair_contract_ref')}[/bold]"
             )
+            console.print(
+                f"[bold]Findings:[/bold] "
+                f"{format_console_list(item.get('finding_refs', []))}"
+            )
+            console.print(
+                f"[bold]Target Files:[/bold] "
+                f"{format_console_list(item.get('target_files', []))}"
+            )
+            console.print(
+                f"[bold]Target Symbols:[/bold] "
+                f"{format_console_list(item.get('target_symbols', []))}"
+            )
+            console.print(
+                f"[bold]Implementation Intent:[/bold] "
+                f"{item.get('implementation_intent')}"
+            )
+            console.print(
+                f"[bold]Code-level Approach:[/bold] "
+                f"{item.get('code_level_approach')}"
+            )
+            console.print(
+                f"[bold]Change Boundary:[/bold] "
+                f"{item.get('change_boundary')}"
+            )
+            console.print(
+                f"[bold]Protect:[/bold] "
+                f"{item.get('protected_behavior')}"
+            )
+            console.print(
+                f"[bold]Side-effect Considerations:[/bold] "
+                f"{item.get('side_effect_considerations')}"
+            )
+            console.print(
+                f"[bold]Targeted Verification:[/bold] "
+                f"{item.get('targeted_verification')}"
+            )
+            console.print(
+                f"[bold]Regression Verification:[/bold] "
+                f"{item.get('regression_verification')}"
+            )
+            console.print(
+                f"[bold]Patch Validation:[/bold] "
+                f"{item.get('patch_validation_status')}"
+            )
+            console.print(
+                f"[bold]Guidance Status:[/bold] "
+                f"{item.get('status')}"
+            )
+
+    console.print(
+        f"[bold]Shadow Validation:[/bold] "
+        f"{code_data.get('shadow_validation_status', 'NOT_RUN')}"
+    )
+    console.print(
+        f"[bold]Current Knowledge Required:[/bold] "
+        f"{code_data.get('current_knowledge_required', False)}"
+    )
+    if code_data.get("current_knowledge_reason"):
+        console.print(
+            f"[bold]Why:[/bold] {code_data.get('current_knowledge_reason')}"
+        )
+    console.print(
+        f"[bold]Verification:[/bold] {code_data.get('verification')}"
+    )
+
+    if code_data.get("suggested_patch"):
+        console.print("\n[bold cyan]Unvalidated Suggested Patch[/bold cyan]")
+        console.print(code_data.get("suggested_patch"), markup=False)
+
+    if code_data.get("llm_error"):
+        console.print("\n[bold red]Repair Assurance LLM Fallback Reason[/bold red]")
+        console.print(code_data.get("llm_error"))
+
+    for warning in code_data.get("warnings", []):
+        console.print(
+            f"[bold yellow]Repair Assurance Warning:[/bold yellow] {warning}"
         )
 
-    for warning in code_data.get(
-        "warnings",
-        [],
-    ):
+    for limitation in code_data.get("limitations", []):
         console.print(
-            f"[bold yellow]"
-            f"Code Agent Warning:"
-            f"[/bold yellow] "
-            f"{warning}"
+            f"[bold yellow]Repair Assurance Limitation:[/bold yellow] {limitation}"
         )
 
 
@@ -783,7 +807,7 @@ def analyze_code(
     "--code-fix",
     is_flag=True,
     help=(
-        "Send repair context to the code agent."
+        "Compatibility alias for Agent 2 plus Repair Assurance."
     ),
 )
 @click.option(
@@ -814,6 +838,9 @@ def scan(
     repair_agent_url,
     code_agent_url,
 ):
+    repair_requested = bool(repair or code_fix)
+    repair_assurance_requested = repair_requested
+
     try:
         result = scan_project(
             path
@@ -988,33 +1015,24 @@ def scan(
 
     if (
         analyze
-        or repair
-        or code_fix
+        or repair_requested
     ) and not run:
         console.print(
             "\n[bold red]"
-            "Analyze/repair/code-fix requires --run."
+            "Analyze/repair requires --run."
             "[/bold red]"
         )
         console.print(
             "Use: stitch scan <path> "
-            "--run --analyze --repair --code-fix"
+            "--run --analyze --repair"
         )
         sys.exit(1)
 
-    if (
-        code_fix
-        and not repair
-    ):
+    if code_fix and not repair:
         console.print(
-            "\n[bold yellow]"
-            "Warning:"
-            "[/bold yellow] "
-            "--code-fix works best with --repair."
-        )
-        console.print(
-            "Recommended: stitch scan <path> "
-            "--run --analyze --repair --code-fix"
+            "\n[bold yellow]Compatibility Note:[/bold yellow] "
+            "--code-fix now activates Agent 2 repair planning and "
+            "Repair Assurance. Prefer --repair for the current workflow."
         )
 
     if not run:
@@ -1081,7 +1099,7 @@ def scan(
 
     console.print(
         "\n[bold magenta]"
-        "Agent 3 Source Review Started"
+        "Source Quality Intelligence Analyst Started"
         "[/bold magenta]"
     )
 
@@ -1152,16 +1170,16 @@ def scan(
             f"[bold]Exit Code:[/bold] {execution_result['exit_code']}"
         )
 
-        if analyze or code_fix:
+        if analyze:
             console.print(
                 "\n[bold yellow]"
-                "Runtime Quality Intelligence analysis and Agent 3 runtime code guidance "
-                "were not run because no test command was executed. "
-                "Agent 3 source review was completed independently."
+                "Runtime Quality Intelligence analysis was not run because no test "
+                "command was executed. Source Quality Intelligence was completed "
+                "independently."
                 "[/bold yellow]"
             )
 
-        if repair:
+        if repair_requested:
             console.print(
                 "\n[bold magenta]"
                 "Defect Resolution Intelligence Analyst Started"
@@ -1183,6 +1201,28 @@ def scan(
                 )
 
             print_repair_agent_result(repair_data)
+
+            if repair_assurance_requested:
+                console.print(
+                    "\n[bold magenta]"
+                    "Repair Assurance Intelligence Analyst Started"
+                    "[/bold magenta]"
+                )
+                code_result = suggest_code_fix_with_agent(
+                    code_agent_url,
+                    result,
+                    execution_result,
+                    agent_data,
+                    repair_data,
+                    source_review_data,
+                )
+                if code_result["success"]:
+                    code_data = code_result["data"]
+                else:
+                    code_data = build_unavailable_code_guidance(
+                        code_result["error"]
+                    )
+                print_code_agent_result(code_data)
     else:
         console.print(
             "\n[bold magenta]"
@@ -1345,7 +1385,7 @@ def scan(
                 agent_data
             )
 
-        if repair:
+        if repair_requested:
             console.print(
                 "\n[bold magenta]"
                 "Defect Resolution Intelligence Analyst Started"
@@ -1381,10 +1421,10 @@ def scan(
                 repair_data
             )
 
-        if code_fix:
+        if repair_assurance_requested:
             console.print(
                 "\n[bold magenta]"
-                "Agent 3 Code Repair Guidance Started"
+                "Repair Assurance Intelligence Analyst Started"
                 "[/bold magenta]"
             )
 
@@ -1394,39 +1434,23 @@ def scan(
                 execution_result,
                 agent_data,
                 repair_data,
+                source_review_data,
             )
 
-            if code_result[
-                "success"
-            ]:
-                code_data = (
-                    code_result[
-                        "data"
-                    ]
-                )
+            if code_result["success"]:
+                code_data = code_result["data"]
             else:
-                code_data = (
-                    build_unavailable_code_guidance(
-                        code_result[
-                            "error"
-                        ]
-                    )
+                code_data = build_unavailable_code_guidance(
+                    code_result["error"]
                 )
 
-            print_code_agent_result(
-                code_data
-            )
+            print_code_agent_result(code_data)
 
     workflow_context = {
-        "analyze_requested": bool(
-            analyze
-        ),
-        "repair_requested": bool(
-            repair
-        ),
-        "code_fix_requested": bool(
-            code_fix
-        ),
+        "analyze_requested": bool(analyze),
+        "repair_requested": bool(repair_requested),
+        "repair_assurance_requested": bool(repair_assurance_requested),
+        "code_fix_requested": bool(repair_assurance_requested),
     }
 
     qa_decision = build_qa_decision(
@@ -1491,4 +1515,6 @@ def scan(
                 ]
             )
         )
+
+
 

@@ -1,0 +1,431 @@
+import importlib.util
+import json
+from pathlib import Path
+
+
+APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
+SPEC = importlib.util.spec_from_file_location("stitch_agent3_app", APP_PATH)
+agent3 = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(agent3)
+
+
+def source_request(project_type, path, content, has_tests=True):
+    return agent3.SourceReviewRequest.model_validate(
+        {
+            "project_type": project_type,
+            "has_tests": has_tests,
+            "files": [
+                {
+                    "path": path,
+                    "content": content,
+                    "truncated": False,
+                    "original_chars": len(content),
+                }
+            ],
+            "discovered_files_count": 1,
+            "submitted_files_count": 1,
+            "submitted_chars": len(content),
+        }
+    )
+
+
+def runtime_contract():
+    return {
+        "contract_id": "STITCH-RC-001",
+        "finding_refs": ["RQI-001"],
+        "title": "Repair contract for RQI-001",
+        "priority": "P1",
+        "priority_reason": "Validated runtime failures block the tested behavior.",
+        "repair_objective": "Restore the expected ValueError behavior for invalid division inputs.",
+        "repair_strategy": "Add targeted input validation before division and preserve valid calculations.",
+        "change_boundary": "Limit changes to app.py:10 and app.py:14; avoid unrelated refactoring.",
+        "protected_behavior": "Preserve valid division, valid averaging, and currently passing tests.",
+        "side_effect_risk": "MEDIUM",
+        "verification": "Rerun the affected tests, then run the complete test suite and confirm no new failures.",
+        "done_condition": "The affected tests pass and the full suite has no regression.",
+        "status": "PENDING_VERIFICATION",
+    }
+
+
+def environment_contract():
+    return {
+        "contract_id": "STITCH-RC-001",
+        "finding_refs": ["RQI-001"],
+        "title": "Repair contract for RQI-001",
+        "priority": "P3",
+        "priority_reason": "Runtime validation could not start because Maven is not installed or available in PATH.",
+        "repair_objective": "Restore the execution capability required to run mvn test.",
+        "repair_strategy": "Resolve only the environment or build-tool availability problem and do not modify application source code.",
+        "change_boundary": "Limit changes to build-tool availability, environment configuration, or Maven Wrapper files; keep application source code outside this repair.",
+        "protected_behavior": "Preserve application source and test behavior while restoring the environment needed to execute the existing test workflow.",
+        "side_effect_risk": "MEDIUM",
+        "verification": "Confirm mvn test can start and rerun Stitch QA to obtain runtime evidence.",
+        "done_condition": "The validated Maven command starts successfully and runtime evidence is produced.",
+        "status": "PENDING_VERIFICATION",
+    }
+
+
+def missing_tests_contract():
+    return {
+        "contract_id": "STITCH-RC-001",
+        "finding_refs": ["SQ-SRC-001"],
+        "title": "Repair contract for SQ-SRC-001",
+        "priority": "P2",
+        "priority_reason": "The MEDIUM source finding confirms that no automated tests were detected.",
+        "repair_objective": "Add a focused automated test suite without changing production behavior solely to satisfy the missing-tests finding.",
+        "repair_strategy": "Add focused tests using the detected project test conventions; keep production code unchanged unless a separate validated finding requires a source repair.",
+        "change_boundary": "Limit changes to test files and test configuration needed for discovery and execution; do not modify application behavior unless a separate validated finding requires it.",
+        "protected_behavior": "Preserve existing application behavior while adding tests; do not introduce production-code changes solely to resolve the missing-tests finding.",
+        "side_effect_risk": "MEDIUM",
+        "verification": "Confirm the new tests are discovered, execute them, then run all existing project checks and verify no regression.",
+        "done_condition": "Automated tests are discovered and execute successfully while application behavior remains unchanged.",
+        "status": "PENDING_VERIFICATION",
+    }
+
+
+def test_source_quality_python_deterministic_findings_and_missing_tests(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    content = 'password = "production-secret"\n\ndef run(value):\n    return eval(value)\n'
+    request = source_request("Python Project", "app.py", content, has_tests=False)
+    result = agent3.review_source_request(request)
+
+    assert result["agent_id"] == "source-quality-analyst"
+    assert result["display_name"] == "Source Quality Intelligence Analyst"
+    assert result["status"] == "COMPLETED"
+    assert result["mode"] == "deterministic-validated"
+    assert result["risk_level"] == "HIGH"
+    assert result["release_recommendation"] == "BLOCK_RELEASE"
+    assert result["findings_count"] == 3
+    assert [item["id"] for item in result["findings"]] == [
+        "SQ-SRC-001",
+        "SQ-SRC-002",
+        "SQ-SRC-003",
+    ]
+    assert {item["title"] for item in result["findings"]} == {
+        "Possible hardcoded credential",
+        "Dynamic code execution",
+        "No automated tests detected",
+    }
+
+
+def test_source_quality_java_maven_detects_runtime_command_execution(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    content = (
+        "public class Runner {\n"
+        "    public void run(String command) throws Exception {\n"
+        "        Runtime.getRuntime().exec(command);\n"
+        "    }\n"
+        "}\n"
+    )
+    request = source_request(
+        "Java Maven Project",
+        "src/main/java/example/Runner.java",
+        content,
+        has_tests=True,
+    )
+    result = agent3.review_source_request(request)
+
+    assert result["findings_count"] == 1
+    finding = result["findings"][0]
+    assert finding["title"] == "Runtime command execution"
+    assert finding["severity"] == "HIGH"
+    assert finding["file_path"] == "src/main/java/example/Runner.java"
+    assert finding["line"] == 3
+
+
+def test_source_ai_finding_is_file_line_grounded_and_high_is_clamped(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", True)
+    content = "def ratio(value, total):\n    return value / total\n"
+    request = source_request("Python Project", "app.py", content, has_tests=True)
+
+    payload = {
+        "c": "HIGH",
+        "x": [
+            {
+                "f": "app.py",
+                "l": 2,
+                "g": "reliability",
+                "s": "HIGH",
+                "t": "Possible missing denominator validation",
+                "i": "A zero denominator could raise an unexpected exception.",
+                "r": "Validate the denominator according to the documented input contract.",
+                "k": False,
+                "kr": "",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        agent3.model_service,
+        "generate_json",
+        lambda *args, **kwargs: json.dumps(payload),
+    )
+    result = agent3.review_source_request(request)
+
+    assert result["mode"] == "hybrid-ai-validated"
+    assert result["confidence"] == "HIGH"
+    assert result["findings_count"] == 1
+    finding = result["findings"][0]
+    assert finding["file_path"] == "app.py"
+    assert finding["line"] == 2
+    assert finding["severity"] == "MEDIUM"
+    assert finding["evidence"] == "return value / total"
+    assert finding["detector"] == "ai-contextual-validated"
+
+
+def test_source_ai_unknown_location_is_discarded(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", True)
+    request = source_request(
+        "Python Project",
+        "app.py",
+        "def add(a, b):\n    return a + b\n",
+        has_tests=True,
+    )
+    payload = {
+        "c": "HIGH",
+        "x": [
+            {
+                "f": "invented.py",
+                "l": 999,
+                "g": "correctness",
+                "s": "HIGH",
+                "t": "Invented source defect",
+                "i": "This issue is not grounded in supplied source evidence.",
+                "r": "Change an invented file that is not part of the project.",
+                "k": False,
+                "kr": "",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        agent3.model_service,
+        "generate_json",
+        lambda *args, **kwargs: json.dumps(payload),
+    )
+    result = agent3.review_source_request(request)
+
+    assert result["findings_count"] == 0
+    assert result["risk_level"] == "LOW"
+
+
+def test_repair_assurance_without_agent2_contract_is_not_required(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "repair_plan": {"stitch_repair_contracts": []},
+        }
+    )
+    result = agent3.repair_assurance_request(request)
+
+    assert result["status"] == "NOT_REQUIRED"
+    assert result["guidance"] == []
+    assert result["auto_apply"] is False
+
+
+def test_environment_contract_never_proposes_application_source_change(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Java Maven Project",
+            "command": "mvn test",
+            "success": False,
+            "failure_type": "MAVEN_NOT_AVAILABLE",
+            "repair_plan": {
+                "stitch_repair_contracts": [environment_contract()]
+            },
+            "source_files": [
+                {
+                    "path": "src/main/java/example/Calculator.java",
+                    "content": "public class Calculator {}",
+                }
+            ],
+        }
+    )
+    result = agent3.repair_assurance_request(request)
+    item = result["guidance"][0]
+
+    assert result["status"] == "COMPLETED"
+    assert result["mode"] == "deterministic-validated"
+    assert item["status"] == "NO_CODE_CHANGE_REQUIRED"
+    assert item["target_files"] == []
+    assert item["suggested_patch"] is None
+    assert "No application source change" in item["code_level_approach"]
+    assert result["auto_apply"] is False
+    assert result["current_knowledge_required"] is False
+
+
+def test_testing_only_contract_is_bounded_to_tests(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", False)
+    source_review = {
+        "status": "COMPLETED",
+        "findings": [
+            {
+                "id": "SQ-SRC-001",
+                "file_path": None,
+                "line": None,
+                "severity": "MEDIUM",
+                "category": "testing",
+                "title": "No automated tests detected",
+            }
+        ],
+    }
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "source_review": source_review,
+            "repair_plan": {
+                "stitch_repair_contracts": [missing_tests_contract()]
+            },
+            "source_files": [
+                {
+                    "path": "app.py",
+                    "content": "def add(a, b):\n    return a + b\n",
+                }
+            ],
+        }
+    )
+    result = agent3.repair_assurance_request(request)
+    item = result["guidance"][0]
+
+    assert item["target_files"] == []
+    assert "Add focused automated tests" in item["code_level_approach"]
+    assert item["change_boundary"] == missing_tests_contract()["change_boundary"]
+    assert item["protected_behavior"] == missing_tests_contract()["protected_behavior"]
+    assert item["patch_validation_status"] == "NOT_GENERATED"
+    assert result["auto_apply"] is False
+
+
+def test_ai_repair_guidance_cannot_escape_contract_file_boundary(monkeypatch):
+    monkeypatch.setattr(agent3.model_service, "enabled", True)
+    runtime_analysis = {
+        "root_cause_groups": [
+            {
+                "group_id": "RQI-001",
+                "evidence": [
+                    {
+                        "application_file": "app.py",
+                        "application_line": 2,
+                    }
+                ],
+            }
+        ]
+    }
+    request = agent3.RepairAssuranceRequest.model_validate(
+        {
+            "project_type": "Python Project",
+            "command": "python -m pytest",
+            "success": False,
+            "exit_code": 1,
+            "runtime_analysis": runtime_analysis,
+            "repair_plan": {
+                "stitch_repair_contracts": [runtime_contract()]
+            },
+            "source_files": [
+                {
+                    "path": "app.py",
+                    "content": (
+                        "def divide(a, b):\n"
+                        "    return a / b\n\n"
+                        "def average(values):\n"
+                        "    return sum(values) / len(values)\n"
+                    ),
+                }
+            ],
+        }
+    )
+    payload = {
+        "c": "HIGH",
+        "x": [
+            {
+                "r": "STITCH-RC-001",
+                "f": ["RQI-001"],
+                "t": ["invented.py"],
+                "y": "invented_symbol",
+                "i": "Restore the expected ValueError contract for invalid inputs.",
+                "a": "Add explicit guards before the two divisions and raise ValueError for the validated invalid inputs.",
+                "e": "Keep valid calculations unchanged and avoid unrelated refactoring.",
+                "v": "Rerun the two affected failing tests and confirm they pass.",
+                "g": "Run the complete pytest suite and confirm no new failures.",
+                "p": "",
+                "k": True,
+                "kr": "Current framework compatibility documentation is required.",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        agent3.model_service,
+        "generate_json",
+        lambda *args, **kwargs: json.dumps(payload),
+    )
+    result = agent3.repair_assurance_request(request)
+    item = result["guidance"][0]
+
+    assert result["mode"] == "ai-reasoned-validated"
+    assert item["target_files"] == ["app.py"]
+    assert "divide" in item["target_symbols"]
+    assert "average" in item["target_symbols"]
+    assert item["change_boundary"] == runtime_contract()["change_boundary"]
+    assert item["protected_behavior"] == runtime_contract()["protected_behavior"]
+    assert item["current_knowledge_required"] is False
+    assert result["current_knowledge_required"] is False
+    assert item["patch_validation_status"] == "NOT_GENERATED"
+
+
+def test_health_exposes_both_agent3_roles_and_granite_default():
+    status = agent3.health_check()
+    capabilities = {item["agent_id"] for item in status["capabilities"]}
+
+    assert capabilities == {
+        "source-quality-analyst",
+        "repair-assurance-analyst",
+    }
+    assert status["supported_project_types"] == [
+        "Python Project",
+        "Java Maven Project",
+    ]
+    assert agent3.model_service.model_repo == "ibm-granite/granite-4.1-3b-GGUF"
+    assert agent3.model_service.model_file == "granite-4.1-3b-Q4_K_M.gguf"
+    assert agent3.model_service.model_revision == "b628c0ba2ad455695caee93e6a7ac8b3660ad229"
+    assert agent3.model_service.quantization == "Q4_K_M"
+
+
+def test_model_service_uses_json_schema_and_stops_on_complete_json():
+    payload = json.dumps({"c": "HIGH", "x": []}, separators=(",", ":"))
+    captured = {}
+
+    class FakeModel:
+        def tokenize(self, value, add_bos=False, special=True):
+            return list(range(max(1, len(value) // 8)))
+
+        def create_chat_completion(self, **kwargs):
+            captured.update(kwargs)
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": payload},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+
+    service = agent3.ModelService()
+    service.model = FakeModel()
+    service.model_name = service.primary_model
+    service.max_input_tokens = 10000
+    text = service.generate_json(
+        [
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": "Review source."},
+        ],
+        agent3.SOURCE_AI_SCHEMA,
+        200,
+        "source-quality",
+    )
+
+    assert json.loads(text) == {"c": "HIGH", "x": []}
+    assert captured["response_format"]["type"] == "json_object"
+    assert captured["response_format"]["schema"] == agent3.SOURCE_AI_SCHEMA
+    assert captured["stream"] is True
+    assert service.last_generation["finish_reason"] == "json_complete"
