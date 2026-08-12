@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/stitch-qa-hero.png" alt="Stitch QA hero banner" />
+</p>
+
 # Stitch QA
 
 [![GitHub release](https://img.shields.io/github/v/release/hashan-7/stitch-qa)](https://github.com/hashan-7/stitch-qa/releases)
