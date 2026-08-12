@@ -112,7 +112,9 @@ def test_remote_failure_uses_structured_client_fallback(monkeypatch):
     code_cli = types.ModuleType("stitch_cli.code_cli")
     code_cli.call_code_agent = lambda *args, **kwargs: None
     code_cli.call_source_review_agent = lambda *args, **kwargs: None
+    code_cli.call_repair_assurance_agent = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "stitch_cli.code_cli", code_cli)
+    monkeypatch.delitem(sys.modules, "stitch_cli.agent_client", raising=False)
     agent_client = importlib.import_module("stitch_cli.agent_client")
     monkeypatch.setattr(
         agent_client,

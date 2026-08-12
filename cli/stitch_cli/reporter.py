@@ -834,7 +834,7 @@ def build_repair_agent_json(repair_data):
         "confidence": safe_value(repair_data.get("confidence"), "LOW"),
         "repair_risk_level": repair_risk,
         "risk_level": repair_risk,
-        "auto_apply": bool(repair_data.get("auto_apply", False)),
+        "auto_apply": False,
         "summary": safe_value(repair_data.get("summary")),
         "stitch_repair_contracts": contracts,
         "current_knowledge_required": bool(
@@ -926,7 +926,7 @@ def build_code_agent_json(
         "status": safe_value(source.get("status")),
         "confidence": safe_value(source.get("confidence"), "UNKNOWN"),
         "risk_level": safe_value(source.get("risk_level"), "UNKNOWN"),
-        "auto_apply": bool(source.get("auto_apply", False)),
+        "auto_apply": False,
         "summary": safe_value(source.get("summary")),
         "guidance": guidance,
         "suggested_patch": safe_value(source.get("suggested_patch")),
@@ -3406,6 +3406,5 @@ def generate_report(
     )
 
     return md_report_path
-
 
 

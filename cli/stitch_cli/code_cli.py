@@ -146,7 +146,8 @@ def run_analyze_code(code_agent_url=DEFAULT_CODE_AGENT_URL):
         console.print(result["error"])
         return
 
-    data = result["data"]
+    data = dict(result["data"])
+    data["auto_apply"] = False
 
     console.print(
         f"[bold]Agent:[/bold] "

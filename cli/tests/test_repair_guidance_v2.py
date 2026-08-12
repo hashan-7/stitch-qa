@@ -8,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 CLIENT_PATH = ROOT / "cli" / "stitch_cli" / "agent_client.py"
+CODE_CLI_PATH = ROOT / "cli" / "stitch_cli" / "code_cli.py"
 REPORTER_PATH = ROOT / "cli" / "stitch_cli" / "reporter.py"
 MAIN_PATH = ROOT / "cli" / "stitch_cli" / "main.py"
 
@@ -20,9 +21,19 @@ def load_reporter():
 
 
 def load_client():
+    module_names = (
+        "stitch_cli",
+        "stitch_cli.code_cli",
+        "stitch_cli.runtime_fallback",
+        "stitch_cli.agent_client",
+    )
+    missing = object()
+    original_modules = {
+        name: sys.modules.get(name, missing)
+        for name in module_names
+    }
     pkg = types.ModuleType("stitch_cli")
     pkg.__path__ = []
-    sys.modules.setdefault("stitch_cli", pkg)
 
     code_cli = types.ModuleType("stitch_cli.code_cli")
     code_cli.call_code_agent = lambda *args, **kwargs: None
@@ -32,14 +43,30 @@ def load_client():
 
     runtime_fallback = types.ModuleType("stitch_cli.runtime_fallback")
     runtime_fallback.build_client_runtime_fallback = lambda *args, **kwargs: {}
-    sys.modules["stitch_cli.runtime_fallback"] = runtime_fallback
 
-    spec = importlib.util.spec_from_file_location(
-        "stitch_cli.agent_client",
-        CLIENT_PATH,
-    )
+    try:
+        sys.modules["stitch_cli"] = pkg
+        sys.modules["stitch_cli.code_cli"] = code_cli
+        sys.modules["stitch_cli.runtime_fallback"] = runtime_fallback
+        spec = importlib.util.spec_from_file_location(
+            "stitch_cli.agent_client",
+            CLIENT_PATH,
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["stitch_cli.agent_client"] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for name, original in original_modules.items():
+            if original is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
+
+
+def load_code_cli():
+    spec = importlib.util.spec_from_file_location("stitch_code_cli_v2", CODE_CLI_PATH)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["stitch_cli.agent_client"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -169,6 +196,59 @@ def test_remote_auto_apply_is_forced_false():
 
     assert client.normalize_repair_agent_data(repair_response)["auto_apply"] is False
     assert client.normalize_code_agent_data(assurance_response)["auto_apply"] is False
+
+
+def test_standalone_cli_forces_remote_auto_apply_false(monkeypatch):
+    code_cli = load_code_cli()
+    answers = iter(
+        [
+            "Python Project",
+            "app.py",
+            "No root cause provided.",
+            "No repair summary provided.",
+        ]
+    )
+    output = []
+    monkeypatch.setattr(code_cli.Prompt, "ask", lambda *args, **kwargs: next(answers))
+    monkeypatch.setattr(code_cli, "read_multiline_input", lambda title: "example")
+    monkeypatch.setattr(
+        code_cli,
+        "call_code_agent",
+        lambda *args, **kwargs: {
+            "success": True,
+            "data": {
+                "display_name": "Repair Assurance Intelligence Analyst",
+                "mode": "remote",
+                "status": "COMPLETED",
+                "risk_level": "LOW",
+                "auto_apply": True,
+                "summary": "Safe guidance.",
+                "verification": "Run the relevant tests.",
+            },
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        code_cli.console,
+        "print",
+        lambda *args, **kwargs: output.append(" ".join(str(value) for value in args)),
+    )
+
+    code_cli.run_analyze_code("https://example.invalid")
+
+    assert "[bold]Auto Apply:[/bold] False" in output
+    assert "[bold]Auto Apply:[/bold] True" not in output
+
+
+def test_report_serializers_force_auto_apply_false():
+    reporter = load_reporter()
+    repair_response = sample_repair_response()
+    repair_response["auto_apply"] = True
+    assurance_response = sample_repair_assurance_response()
+    assurance_response["auto_apply"] = True
+
+    assert reporter.build_repair_agent_json(repair_response)["auto_apply"] is False
+    assert reporter.build_code_agent_json(assurance_response)["auto_apply"] is False
 
 
 def test_repair_request_sends_runtime_and_source_evidence(monkeypatch):
