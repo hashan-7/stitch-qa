@@ -1,8 +1,5 @@
-fastapi
-uvicorn
-pydantic
-transformers
-torch
-sentencepiece
-
-accelerate
+fastapi==0.141.1
+uvicorn==0.52.1
+pydantic==2.13.4
+huggingface_hub==1.27.0
+llama-cpp-python==0.3.34
